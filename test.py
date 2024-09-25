@@ -1,2 +1,2 @@
 import torch
-print('hello')
+print('test.py running')

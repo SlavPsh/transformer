@@ -69,9 +69,9 @@ def evaluate(model, validation_loader, loss_fn):
 if __name__ == '__main__':
     DATA_PATH = '/data/atlas/users/spshenov/trackml_10to50tracks_40kevents.csv'
     MAX_NUM_HITS = 1500
-    NUM_EPOCHS = 5
-    EARLY_STOPPING = 100
-    MODEL_NAME = "test"
+    NUM_EPOCHS = 2
+    EARLY_STOPPING = 50
+    MODEL_NAME = "base_10_50_tracks_trackml"
 
     torch.manual_seed(37)  # for reproducibility
 
@@ -81,7 +81,7 @@ if __name__ == '__main__':
                                                               train_frac=0.7,
                                                               valid_frac=0.15,
                                                               test_frac=0.15,
-                                                              batch_size=16)
+                                                              batch_size=64)
     
     print("data loaded")
     

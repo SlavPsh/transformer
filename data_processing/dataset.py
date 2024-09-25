@@ -39,7 +39,7 @@ def load_trackml_data(data, max_num_hits, normalize=False, chunking=False):
     """
 
     if not chunking:
-        data = pd.read_csv(data).head(100000)
+        data = pd.read_csv(data)
 
     # Normalize the data if applicable
     if normalize:
