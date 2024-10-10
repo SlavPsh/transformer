@@ -61,9 +61,13 @@ def load_trackml_data(data, max_num_hits, normalize=False, chunking=False):
         # Returns the track parameters as a padded sequence; this is what the transformer must regress
         event_track_params_data = event_rows[["px","py","pz","q"]].to_numpy(dtype=np.float32)
         p = np.sqrt(event_track_params_data[:,0]**2 + event_track_params_data[:,1]**2 + event_track_params_data[:,2]**2)
+        log_p = np.log(p)
+        log_pt = np.log(np.sqrt(event_track_params_data[:,0]**2 + event_track_params_data[:,1]**2))
+        log_pz = np.log(np.abs(event_track_params_data[:,2]))
+        q = event_track_params_data[:,3]
         theta = np.arccos(event_track_params_data[:,2]/p)
         phi = np.arctan2(event_track_params_data[:,1], event_track_params_data[:,0])
-        processed_event_track_params_data = np.column_stack([theta, np.sin(phi), np.cos(phi), event_track_params_data[:,3]])
+        processed_event_track_params_data = np.column_stack([theta, np.sin(phi), np.cos(phi), q, log_p])
         return np.pad(processed_event_track_params_data, [(0, max_num_hits-len(event_rows)), (0, 0)], "constant", constant_values=PAD_TOKEN)
 
     def extract_hit_classes_data(event_rows):
