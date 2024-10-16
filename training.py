@@ -26,7 +26,8 @@ def train_epoch(model, optim, train_loader, loss_fn):
 
     for data in train_loader:
         _, hits, track_params, classes = data
-        # weights = classes[1]
+        # Zero the gradients
+
         optim.zero_grad()
 
         # Make prediction
@@ -35,9 +36,13 @@ def train_epoch(model, optim, train_loader, loss_fn):
 
         pred = torch.unsqueeze(pred[~padding_mask], 0)
         track_params = torch.unsqueeze(track_params[~padding_mask], 0)
-
+        # Get the weights for the loss function
+        classes = torch.unsqueeze(classes[~padding_mask], 0)
+        weights = classes[...,1]
+        weights = weights.unsqueeze(-1)
         # Calculate loss and use it to update weights
-        loss = loss_fn(pred, track_params)
+        
+        loss = loss_fn(pred, track_params, weights)
         loss.backward()
         optim.step()
         losses += loss.item()
@@ -55,15 +60,19 @@ def evaluate(model, validation_loader, loss_fn):
     with torch.no_grad():
         for data in validation_loader:
             _, hits, track_params, classes = data
-            # weights = classes[1]
             # Make prediction
             padding_mask = (hits == PAD_TOKEN).all(dim=2)
             pred = model(hits, padding_mask)
 
             pred = torch.unsqueeze(pred[~padding_mask], 0)
             track_params = torch.unsqueeze(track_params[~padding_mask], 0)
+
+            # Get the weights for the loss function
+            classes = torch.unsqueeze(classes[~padding_mask], 0)
+            weights = classes[...,1]
+            weights = weights.unsqueeze(-1)
             
-            loss = loss_fn(pred, track_params)
+            loss = loss_fn(pred, track_params, weights)
             losses += loss.item()
             
     return losses / len(validation_loader)
@@ -125,13 +134,11 @@ def predict(model, test_loader, min_cl_size, min_samples, data_type):
     return predictions, score/len(test_loader), perfects/len(test_loader), doubles/len(test_loader), lhcs/len(test_loader)
 
 def custom_mse_loss(predictions, targets, weights):
-    # Compute the squared difference
-    squared_diff = (predictions - targets) ** 2
-    
-    mse = squared_diff.mean(dim=2)
 
-    # Apply the weights to the MSE
-    weighted_squared_diff = weights * mse
+    # Compute the squared difference between predictions and targets
+    squared_diff = (predictions - targets) ** 2  
+    # Apply the extracted weights
+    weighted_squared_diff = weights * squared_diff  
     # Compute the mean of the weighted squared differences
     loss = weighted_squared_diff.mean()
 
@@ -174,7 +181,8 @@ if __name__ == '__main__':
     pytorch_total_params = sum(p.numel() for p in transformer.parameters() if p.requires_grad)
     print("Total trainable params: {}".format(pytorch_total_params))
 
-    loss_fn =  nn.MSELoss()
+    #loss_fn =  nn.MSELoss()
+    loss_fn = custom_mse_loss
     optimizer = torch.optim.Adam(transformer.parameters(), lr=1e-3) 
 
     # Training
@@ -191,7 +199,7 @@ if __name__ == '__main__':
 
         # Bookkeeping
         print(strftime("%Y-%m-%d %H:%M:%S", gmtime()))
-        print(f"Epoch: {epoch}\nVal loss: {val_loss:.8f}, Train loss: {train_loss:.8f}", flush=True)
+        print(f"Epoch: {epoch}\nVal loss: {val_loss:.10f}, Train loss: {train_loss:.10f}", flush=True)
         train_losses.append(train_loss)
         val_losses.append(val_loss)
 

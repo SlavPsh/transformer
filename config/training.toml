@@ -1,0 +1,59 @@
+# example toml
+[experiment]
+name = "experiment_name"
+description = "initial run"
+
+[data]
+data_dir = "data_dir"
+train_file = "sorted_train.pt"
+val_file = "sorted_val.pt"
+test_file = "sorted_test.pt"
+test_helperfile = "sorted_test_helper.pt"
+test_truthfile = "test_truths.csv"
+dataloader_num_workers = 4
+num_classes = 451
+
+
+[model]
+inputfeature_dim = 3
+num_heads = 8
+embed_dim = 128
+num_layers = 6
+dropout = 0.1
+use_flash_attention = false
+
+
+[training]
+batch_size = 64
+total_epochs = 100
+shuffle = false # whether training data should be shuffled
+start_from_scratch = true
+
+[training.scheduler]
+# type is only ReduceOnPlateau atm
+warmup_epochs = 5
+initial_lr = 1e-4
+target_lr = 1e-3
+mode = "min"
+factor = 0.5
+patience = 10
+verbose = true
+
+[training.early_stopping]
+patience = 7
+verbose = true
+
+
+[output]
+base_path = "../results/"
+
+[logging]
+level = "INFO"
+epoch_log_interval = 2
+model_save_interval = 50
+
+[wandb]
+entity = "entity"
+project_name = "project_name"
+run_name = "run_name"
+watch_interval = 50

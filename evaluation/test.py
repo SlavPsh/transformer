@@ -70,8 +70,8 @@ if __name__ == "__main__":
                                                                 batch_size=1)
     print('data loaded')
 
-    for cl_size in [2, 3, 4, 5, 6, 7, 8, 9]:
-        for min_sam in [2, 3, 4, 5, 6, 7, 8, 9]:
+    for cl_size in [3, 4, 5, 6, 7]:
+        for min_sam in [2, 3, 4, 5, 6]:
             preds, score, perfect, double_maj, lhc = predict(transformer, test_loader, cl_size, min_sam, args.data_type)
             print(f'cluster size {cl_size}, min samples {min_sam}, score {score}', flush=True)
             print(perfect, double_maj, lhc, flush=True)
