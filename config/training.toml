@@ -4,7 +4,7 @@ name = "experiment_name"
 description = "initial run"
 
 [data]
-data_dir = "data_dir"
+data_dir = "dir"
 train_file = "sorted_train.pt"
 val_file = "sorted_val.pt"
 test_file = "sorted_test.pt"
