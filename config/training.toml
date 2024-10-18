@@ -1,59 +1,47 @@
-# example toml
+# Configuration toml
 [experiment]
-name = "experiment_name"
-description = "initial run"
+name = "Transformer with attention distance"
+description = "Training a model with attention distance mask"
 
 [data]
-data_dir = "dir12"
-train_file = "sorted_train.pt"
+data_dir = "/data/atlas/users/spshenov/ml_input_data"
+data_file = "trackml_tiny_10to50tracks_100events.csv"
+train_file = "trackml_10to50tracks_40kevents.csv"
 val_file = "sorted_val.pt"
 test_file = "sorted_test.pt"
 test_helperfile = "sorted_test_helper.pt"
 test_truthfile = "test_truths.csv"
 dataloader_num_workers = 4
-num_classes = 451
-
 
 [model]
-inputfeature_dim = 3
-num_heads = 8
-embed_dim = 128
-num_layers = 6
+num_encoder_layers = 6
+d_model = 32
+n_head = 4
+input_size = 3
+output_size = 5
+dim_feedforward = 128
 dropout = 0.1
 use_flash_attention = false
 
-
 [training]
 batch_size = 64
-total_epochs = 100
+total_epochs = 1
 shuffle = false # whether training data should be shuffled
 start_from_scratch = true
-
-[training.scheduler]
-# type is only ReduceOnPlateau atm
-warmup_epochs = 5
-initial_lr = 1e-4
-target_lr = 1e-3
-mode = "min"
-factor = 0.5
-patience = 10
-verbose = true
+default_lr = 1e-3
 
 [training.early_stopping]
-patience = 7
-verbose = true
-
+patience = 30
 
 [output]
-base_path = "../results/"
+base_path = "/data/atlas/users/spshenov/trained_models"
 
 [logging]
 level = "INFO"
-epoch_log_interval = 2
-model_save_interval = 50
+epoch_log_interval = 1
+model_save_interval = 1
 
 [wandb]
-entity = "entity"
-project_name = "project_name"
-run_name = "run_name"
-watch_interval = 50
+entity = "spshenov-university-of-amsterdam"
+project_name = "transformer_for_particle_tracking"
+watch_interval = 1

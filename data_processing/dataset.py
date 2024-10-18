@@ -4,14 +4,13 @@ import numpy as np
 import pandas as pd
 
 PAD_TOKEN = -1
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 class HitsDataset(Dataset):
 
-    def __init__(self, hits_data, track_params_data=None, class_data=None):
-        self.hits_data = hits_data.to(DEVICE)
-        self.track_params_data = track_params_data.to(DEVICE)
-        self.class_data = class_data.to(DEVICE)
+    def __init__(self, device, hits_data, track_params_data=None, class_data=None):
+        self.hits_data = hits_data.to(device)
+        self.track_params_data = track_params_data.to(device)
+        self.class_data = class_data.to(device)
         self.total_events = self.__len__()
 
     def __len__(self):
@@ -29,7 +28,7 @@ def get_dataloaders(dataset, train_frac, valid_frac, test_frac, batch_size):
 
     return train_loader, valid_loader, test_loader
 
-def load_trackml_data(data, max_num_hits, normalize=False, chunking=False):
+def load_trackml_data(data, normalize=False, chunking=False):
     """
     Function for reading .csv file with TrackML data and creating tensors
     containing the hits and ground truth information from it.
@@ -51,6 +50,7 @@ def load_trackml_data(data, max_num_hits, normalize=False, chunking=False):
     # Shuffling the data and grouping by event ID
     shuffled_data = data.sample(frac=1)
     data_grouped_by_event = shuffled_data.groupby("event_id")
+    max_num_hits = data_grouped_by_event.size().max()
 
     def extract_hits_data(event_rows):
         # Returns the hit coordinates as a padded sequence; this is the input to the transformer

@@ -5,14 +5,58 @@ import numpy as np
 from time import gmtime, strftime
 from hdbscan import HDBSCAN
 
+# Import supporting tools
+from utils.io_utils import load_config, setup_logging, unique_output_dir, copy_config_to_output, get_file_path
+from utils.wandb_utils import WandbLogger
+import argparse
+import logging
+import os, sys
+from coolname import generate_slug
+
 from model import TransformerRegressor, save_model
 from evaluation.scoring import calc_score, calc_score_trackml
 from data_processing.dataset import HitsDataset, PAD_TOKEN, get_dataloaders
 
 
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-TEST = False
+def setup_training(config, device):
+    # model
+    model = TransformerRegressor(
+        num_encoder_layers = config['model']['num_encoder_layers'],
+        d_model = config['model']['d_model'],
+        n_head=config['model']['n_head'],
+        input_size = config['model']['input_size'],
+        output_size = config['model']['output_size'],
+        dim_feedforward=config['model']['dim_feedforward'],
+        dropout=config['model']['dropout']
+    ).to(device)
 
+    # optimizer
+    default_lr = config['training']['default_lr']
+    optimizer = torch.optim.Adam(model.parameters(), lr=default_lr)
+
+    # criterion/loss function
+    loss_fn = nn.MSELoss()
+
+    # check whether to load from checkpoint
+    if not config['training']['start_from_scratch']:
+        if 'checkpoint_path' not in config['training'] or not config['training']['checkpoint_path']:
+            logging.error("Checkpoint path must be provided when resuming from a checkpoint.")
+            sys.exit("Error: Checkpoint path not provided but required for resuming training.")
+        elif not os.path.exists(config['training']['checkpoint_path']):
+            logging.error(f"Checkpoint file not found: {config['training']['checkpoint_path']}")
+            sys.exit("Error: Checkpoint file does not exist.")
+        else:
+            checkpoint = torch.load(config['training']['checkpoint_path'])
+            model.load_state_dict(checkpoint['model_state'])
+            optimizer.load_state_dict(checkpoint['optimizer_state'])
+            start_epoch = checkpoint['epoch'] + 1
+            logging.info("Resuming training from checkpoint.")
+    else:
+        start_epoch = 0
+        if 'checkpoint_path' in config['training'] and config['training']['checkpoint_path']:
+            logging.warning("Checkpoint path provided but will not be used since training starts from scratch.")
+    
+    return model, optimizer, loss_fn, start_epoch
 
 def train_epoch(model, optim, train_loader, loss_fn):
     '''
@@ -37,12 +81,12 @@ def train_epoch(model, optim, train_loader, loss_fn):
         pred = torch.unsqueeze(pred[~padding_mask], 0)
         track_params = torch.unsqueeze(track_params[~padding_mask], 0)
         # Get the weights for the loss function
-        classes = torch.unsqueeze(classes[~padding_mask], 0)
-        weights = classes[...,1]
-        weights = weights.unsqueeze(-1)
+        #classes = torch.unsqueeze(classes[~padding_mask], 0)
+        #weights = classes[...,1]
+        #weights = weights.unsqueeze(-1)
         # Calculate loss and use it to update weights
         
-        loss = loss_fn(pred, track_params, weights)
+        loss = loss_fn(pred, track_params)
         loss.backward()
         optim.step()
         losses += loss.item()
@@ -68,11 +112,11 @@ def evaluate(model, validation_loader, loss_fn):
             track_params = torch.unsqueeze(track_params[~padding_mask], 0)
 
             # Get the weights for the loss function
-            classes = torch.unsqueeze(classes[~padding_mask], 0)
-            weights = classes[...,1]
-            weights = weights.unsqueeze(-1)
+            #classes = torch.unsqueeze(classes[~padding_mask], 0)
+            #weights = classes[...,1]
+            #weights = weights.unsqueeze(-1)
             
-            loss = loss_fn(pred, track_params, weights)
+            loss = loss_fn(pred, track_params)
             losses += loss.item()
             
     return losses / len(validation_loader)
@@ -135,30 +179,45 @@ def predict(model, test_loader, min_cl_size, min_samples, data_type):
 
 def custom_mse_loss(predictions, targets, weights):
 
+    # Ensure the weights are normalized
+    normalized_weights = weights / weights.sum()
+
     # Compute the squared difference between predictions and targets
     squared_diff = (predictions - targets) ** 2  
     # Apply the extracted weights
-    weighted_squared_diff = weights * squared_diff  
+    weighted_squared_diff = normalized_weights * squared_diff  
     # Compute the mean of the weighted squared differences
     loss = weighted_squared_diff.mean()
 
     return loss
 
-if __name__ == '__main__':
-    DATA_PATH = '/data/atlas/users/spshenov/trackml_10to50tracks_40kevents.csv'
-    MAX_NUM_HITS = 1500
-    NUM_EPOCHS = 600
-    EARLY_STOPPING = 50
-    
-    if TEST == False:
-        MODEL_FILE = "/data/atlas/users/spshenov/models/model_trackml_10to50"
-    else: 
-        MODEL_FILE = "/data/atlas/users/spshenov/test_models/model_trackml_10to50_TEST"
+def main(config_path):
+    #Create unique run name
+    run_name = generate_slug(3)
+    # Load the configuration file
+    config = load_config(config_path)
+    # Create the output directory
+    output_dir = unique_output_dir(config, run_name) # with time stamp and run name
+    copy_config_to_output(config_path, output_dir)
+    # Set up logging
+    setup_logging(config, output_dir)
+    # Set up wandb
+    wandb_logger = WandbLogger(config=config["wandb"],
+                                output_dir=output_dir,
+                                run_name=run_name,
+                                job_type="training")
+    wandb_logger.initialize()
+    # Log the configuration
+    logging.info(f'output_dir: {output_dir}')
+    early_stopping_epoch = config['training']['early_stopping']['patience']
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logging.info(f'Device: {device}')
 
     torch.manual_seed(37)  # for reproducibility
-
-    hits_data, track_params_data, track_classes_data = load_trackml_data(data=DATA_PATH, max_num_hits=MAX_NUM_HITS)
-    dataset = HitsDataset(hits_data, track_params_data, track_classes_data)
+    data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
+    hits_data, track_params_data, track_classes_data = load_trackml_data(data=data_path)
+    dataset = HitsDataset(device, hits_data, track_params_data, track_classes_data)
     train_loader, valid_loader, test_loader = get_dataloaders(dataset,
                                                               train_frac=0.7,
                                                               valid_frac=0.15,
@@ -166,38 +225,29 @@ if __name__ == '__main__':
                                                               batch_size=64)
     print(strftime("%Y-%m-%d %H:%M:%S", gmtime()))
     print("data loaded")
-    
-    # Transformer model
-    
-    transformer = TransformerRegressor(num_encoder_layers=6,
-                                        d_model=32,
-                                        n_head=4,
-                                        input_size=3,
-                                        output_size=5,
-                                        dim_feedforward=128,
-                                        dropout=0.1)
 
-    transformer = transformer.to(DEVICE)
-    pytorch_total_params = sum(p.numel() for p in transformer.parameters() if p.requires_grad)
-    print("Total trainable params: {}".format(pytorch_total_params))
+    # Set up the model, optimizer, and loss function
+    model, optimizer, loss_fn, start_epoch = setup_training(config, device)
 
-    #loss_fn =  nn.MSELoss()
-    loss_fn = custom_mse_loss
-    optimizer = torch.optim.Adam(transformer.parameters(), lr=1e-3) 
+    logging.info("Started training and validation")
+    if 'watch_interval' in config['wandb']:
+        watch_interval = config['wandb']['watch_interval']
+        wandb_logger.run.watch(model, log_freq=watch_interval)
+        logging.info(f"wandb started watching at interval {watch_interval} ")
 
     # Training
     train_losses, val_losses = [], []
     min_val_loss = np.inf
     count = 0
 
-    for epoch in range(NUM_EPOCHS):
+    for epoch in range(start_epoch, config['training']['total_epochs']):
         # Train the model
-        train_loss = train_epoch(transformer, optimizer, train_loader, loss_fn)
+        train_loss = train_epoch(model, optimizer, train_loader, loss_fn)
 
         # Evaluate using validation split
-        val_loss = evaluate(transformer, valid_loader, loss_fn)
+        val_loss = evaluate(model, valid_loader, loss_fn)
 
-        # Bookkeeping
+        # Print info to the cluster logging
         print(strftime("%Y-%m-%d %H:%M:%S", gmtime()))
         print(f"Epoch: {epoch}\nVal loss: {val_loss:.10f}, Train loss: {train_loss:.10f}", flush=True)
         train_losses.append(train_loss)
@@ -206,14 +256,31 @@ if __name__ == '__main__':
         if val_loss < min_val_loss:
             # If the model has a new best validation loss, save it as "the best"
             min_val_loss = val_loss
-            save_model(transformer, optimizer, "best", val_losses, train_losses, epoch, count, MODEL_FILE)
+            wandb_logger.save_model(model, f'model_best_epoch_{epoch}.pth', optimizer, epoch, output_dir)
+            logging.info("Checkpoint saved to output_dir.")
             count = 0
         else:
             # If the model's validation loss isn't better than the best, save it as "the last"
-            save_model(transformer, optimizer, "last", val_losses, train_losses, epoch, count, MODEL_FILE)
+            wandb_logger.save_model(model, f'model_last_epoch_{epoch}.pth', optimizer, epoch, output_dir)
+            logging.info("Checkpoint saved to output_dir.")
             count += 1
 
-        if count >= EARLY_STOPPING:
+        if count >= early_stopping_epoch:
             print(strftime("%Y-%m-%d %H:%M:%S", gmtime()))
             print("Early stopping...")
+            logging.info("Early stopping triggered")
             break
+    
+    logging.info("Finished training")
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logging.info(f"Total Trainable Parameters: {total_params}")
+    wandb_logger.finish()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train a model with a given config file.")
+    parser.add_argument('config_path', type=str, help='Path to the configuration TOML file.')
+    
+    # Parse arguments
+    args = parser.parse_args()
+    main(args.config_path)
