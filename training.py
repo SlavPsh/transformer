@@ -14,8 +14,8 @@ import os, sys
 from time import gmtime, strftime
 from coolname import generate_slug
 
-from model import TransformerRegressor, save_model
-from evaluation.scoring import calc_score, calc_score_trackml
+from model import TransformerRegressor
+
 from data_processing.dataset import HitsDataset, PAD_TOKEN, get_dataloaders
 
 
@@ -137,46 +137,7 @@ def clustering(pred_params, min_cl_size, min_samples):
     cluster_labels = [torch.from_numpy(cl_lbl).int() for cl_lbl in cluster_labels]
     return cluster_labels
     
-def predict(model, test_loader, min_cl_size, min_samples, data_type):
-    '''
-    Evaluates the network on the test data. Returns the predictions and scores.
-    '''
-    # Get the network in evaluation mode
-    torch.set_grad_enabled(False)
-    model.eval()
-    predictions = {}
-    score, perfects, doubles, lhcs = 0., 0., 0., 0.
-    for data in test_loader:
-        event_id, hits, track_params, track_labels = data
 
-        # Make prediction
-        padding_mask = (hits == PAD_TOKEN).all(dim=2)
-        pred = model(hits, padding_mask)
-
-        hits = torch.unsqueeze(hits[~padding_mask], 0)
-        pred = torch.unsqueeze(pred[~padding_mask], 0)
-        track_params = torch.unsqueeze(track_params[~padding_mask], 0)
-        track_labels = torch.unsqueeze(track_labels[~padding_mask], 0)
-
-        # For evaluating the clustering performance on the (noisy) ground truth
-        # noise = np.random.laplace(0, 0.05, size=(track_params.shape[0], track_params.shape[1], track_params.shape[2]))
-        # track_params += noise
-        # cluster_labels = clustering(track_params, min_cl_size, min_samples)
-
-        cluster_labels = clustering(pred, min_cl_size, min_samples)
-        if data_type == 'trackml':
-            event_score, scores = calc_score_trackml(cluster_labels[0], track_labels[0])
-        else:
-            event_score, scores = calc_score(cluster_labels[0], track_labels[0])
-        score += event_score
-        perfects += scores[0]
-        doubles += scores[1]
-        lhcs += scores[2]
-
-        for _, e_id in enumerate(event_id):
-            predictions[e_id.item()] = (hits, pred, track_params, cluster_labels, track_labels, event_score)
-
-    return predictions, score/len(test_loader), perfects/len(test_loader), doubles/len(test_loader), lhcs/len(test_loader)
 
 def custom_mse_loss(predictions, targets, weights):
 

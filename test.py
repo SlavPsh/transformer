@@ -1,8 +1,9 @@
 import torch
 from model import TransformerRegressor
-from training import predict
 from data_processing.dataset import HitsDataset, get_dataloaders
 from data_processing.dataset import load_trackml_data
+from evaluation.scoring import calc_score_trackml
+from training import clustering
 #from evaluation.plotting import plot_heatmap
 
 
@@ -39,6 +40,46 @@ def load_model(config, device):
     model.eval()
     return model 
 
+def predict(model, test_loader, min_cl_size, min_samples):
+    '''
+    Evaluates the network on the test data. Returns the predictions and scores.
+    '''
+    # Get the network in evaluation mode
+    torch.set_grad_enabled(False)
+    model.eval()
+    predictions = {}
+    score, perfects, doubles, lhcs = 0., 0., 0., 0.
+    for data in test_loader:
+        event_id, hits, track_params, track_labels = data
+
+        # Make prediction
+        padding_mask = (hits == PAD_TOKEN).all(dim=2)
+        pred = model(hits, padding_mask)
+
+        hits = torch.unsqueeze(hits[~padding_mask], 0)
+        pred = torch.unsqueeze(pred[~padding_mask], 0)
+        track_params = torch.unsqueeze(track_params[~padding_mask], 0)
+        track_labels = torch.unsqueeze(track_labels[~padding_mask], 0)
+
+        # For evaluating the clustering performance on the (noisy) ground truth
+        # noise = np.random.laplace(0, 0.05, size=(track_params.shape[0], track_params.shape[1], track_params.shape[2]))
+        # track_params += noise
+        # cluster_labels = clustering(track_params, min_cl_size, min_samples)
+
+        cluster_labels = clustering(pred, min_cl_size, min_samples)
+
+        event_score, scores = calc_score_trackml(cluster_labels[0], track_labels[0])
+
+        score += event_score
+        perfects += scores[0]
+        doubles += scores[1]
+        lhcs += scores[2]
+
+        for _, e_id in enumerate(event_id):
+            predictions[e_id.item()] = (hits, pred, track_params, cluster_labels, track_labels, event_score)
+
+    return predictions, score/len(test_loader), perfects/len(test_loader), doubles/len(test_loader), lhcs/len(test_loader)
+
 def main(config_path):
         #Create unique run name
     run_name = generate_slug(3)+"_eval"
@@ -72,9 +113,9 @@ def main(config_path):
     print(strftime("%Y-%m-%d %H:%M:%S", gmtime()))
     print("data loaded")
 
+    model = load_model(config, device)  
+
     logging.info("Started evaluation")
-
-
 
     for cl_size in [5, 6]:
         for min_sam in [2, 3, 4]:

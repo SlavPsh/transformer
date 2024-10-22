@@ -21,15 +21,3 @@ class TransformerRegressor(nn.Module):
         memory = self.encoder(src=x, src_key_padding_mask=padding_mask)
         out = self.decoder(memory)
         return out
-
-
-def save_model(model, optim, type, val_losses, train_losses, epoch, count, file_name):
-    print(f"Saving {type} model")
-    torch.save({
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optim.state_dict(),
-        'train_losses': train_losses,
-        'val_losses': val_losses,
-        'count': count,
-    }, f"{file_name}_{type}")
