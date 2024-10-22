@@ -25,7 +25,7 @@ use_flash_attention = false
 
 [training]
 batch_size = 64
-total_epochs = 600
+total_epochs = 3
 shuffle = false # whether training data should be shuffled
 start_from_scratch = true
 default_lr = 1e-3
@@ -38,10 +38,10 @@ base_path = "/data/atlas/users/spshenov/trained_models"
 
 [logging]
 level = "INFO"
-epoch_log_interval = 10
-model_save_interval = 30
+epoch_log_interval = 1
+model_save_interval = 1
 
 [wandb]
 entity = "spshenov-university-of-amsterdam"
 project_name = "transformer_for_particle_tracking"
-watch_interval = 50
+watch_interval = 1
