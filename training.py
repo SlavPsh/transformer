@@ -2,7 +2,7 @@ from data_processing.dataset import load_trackml_data
 import torch
 import torch.nn as nn
 import numpy as np
-from time import gmtime, strftime
+
 from hdbscan import HDBSCAN
 
 # Import supporting tools
@@ -11,6 +11,7 @@ from utils.wandb_utils import WandbLogger
 import argparse
 import logging
 import os, sys
+from time import gmtime, strftime
 from coolname import generate_slug
 
 from model import TransformerRegressor, save_model
@@ -193,7 +194,7 @@ def custom_mse_loss(predictions, targets, weights):
 
 def main(config_path):
     #Create unique run name
-    run_name = generate_slug(3)
+    run_name = generate_slug(3)+"_train"
     # Load the configuration file
     config = load_config(config_path)
     # Create the output directory
@@ -256,13 +257,13 @@ def main(config_path):
         if val_loss < min_val_loss:
             # If the model has a new best validation loss, save it as "the best"
             min_val_loss = val_loss
-            wandb_logger.save_model(model, f'model_best_epoch_{epoch}.pth', optimizer, epoch, output_dir)
-            logging.info("Checkpoint saved to output_dir.")
+            wandb_logger.save_model(model, f'model_best.pth', optimizer, epoch, output_dir)
+            logging.info("Checkpoint saved to output_dir. Best of run. Epoch: {epoch}")
             count = 0
         else:
             # If the model's validation loss isn't better than the best, save it as "the last"
-            wandb_logger.save_model(model, f'model_last_epoch_{epoch}.pth', optimizer, epoch, output_dir)
-            logging.info("Checkpoint saved to output_dir.")
+            wandb_logger.save_model(model, f'model_last.pth', optimizer, epoch, output_dir)
+            logging.info("Checkpoint saved to output_dir. Last of run. Epoch: {epoch}")
             count += 1
 
         if count >= early_stopping_epoch:

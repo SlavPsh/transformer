@@ -1,18 +1,17 @@
-# Configuration toml
+# example toml
 [experiment]
 name = "Transformer with attention distance"
-description = "Training a model with attention distance mask"
+description = "Evaluating a model with attention distance mask"
 
 [data]
 data_dir = "/data/atlas/users/spshenov/ml_input_data"
 data_file = "trackml_tiny_10to50tracks_100events.csv"
-val_file = "sorted_val.pt"
-test_file = "sorted_test.pt"
-test_helperfile = "sorted_test_helper.pt"
-test_truthfile = "test_truths.csv"
 dataloader_num_workers = 4
+num_classes = 451
+
 
 [model]
+checkpoint_path = "/data/atlas/users/spshenov/trained_models/20241022_141723_meteoric-capable-orangutan/model_best.pth"
 num_encoder_layers = 6
 d_model = 32
 n_head = 4
@@ -22,25 +21,17 @@ dim_feedforward = 128
 dropout = 0.1
 use_flash_attention = false
 
+
 [training]
 batch_size = 64
-total_epochs = 600
-shuffle = false # whether training data should be shuffled
-start_from_scratch = true
-default_lr = 1e-3
 
-[training.early_stopping]
-patience = 30
 
 [output]
 base_path = "/data/atlas/users/spshenov/trained_models"
 
 [logging]
 level = "INFO"
-epoch_log_interval = 10
-model_save_interval = 30
 
 [wandb]
 entity = "spshenov-university-of-amsterdam"
 project_name = "transformer_for_particle_tracking"
-watch_interval = 50

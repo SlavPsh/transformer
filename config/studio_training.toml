@@ -6,7 +6,6 @@ description = "Training a model with attention distance mask"
 [data]
 data_dir = "/data/atlas/users/spshenov/ml_input_data"
 data_file = "trackml_tiny_10to50tracks_100events.csv"
-train_file = "trackml_10to50tracks_40kevents.csv"
 val_file = "sorted_val.pt"
 test_file = "sorted_test.pt"
 test_helperfile = "sorted_test_helper.pt"
@@ -34,7 +33,7 @@ default_lr = 1e-3
 patience = 30
 
 [output]
-base_path = "/data/atlas/users/spshenov/trained_models"
+base_path = "/data/atlas/users/spshenov/studio/trained_models"
 
 [logging]
 level = "INFO"

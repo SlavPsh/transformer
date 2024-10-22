@@ -1,8 +1,4 @@
 import torch
-import argparse
-import sys
-import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from model import TransformerRegressor
 from training import predict
 from data_processing.dataset import HitsDataset, get_dataloaders
@@ -10,69 +6,79 @@ from data_processing.dataset import load_trackml_data
 #from evaluation.plotting import plot_heatmap
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--max_nr_hits', type=int)
-    parser.add_argument('--data_path', type=str)
-    parser.add_argument('--model_name', type=str)
-    parser.add_argument('--data_type', type=str, choices=['2d', 'linear', 'curved', 'trackml'])
-
-    parser.add_argument('--nr_enc_layers', type=int, default=6) 
-    parser.add_argument('--dropout', type=float, default=0.1)
-    parser.add_argument('--embedding_size', type=int, default=32)
-    parser.add_argument('--nr_heads', type=int, default=4) 
-    parser.add_argument('--hidden_dim', type=int, default=128)
-    args = parser.parse_args()
-
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    data_func = None
-    in_size = 3
-    out_size = 3
-    params = []
-    if args.data_type == '2d':
-        data_func = load_linear_2d_data
-        in_size = 2
-        out_size = 1
-        params = ['slope']
-    elif args.data_type == 'linear':
-        data_func = load_linear_3d_data
-        params = ["theta", "sinphi", "cosphi"]
-    elif args.data_type == 'curved':
-        data_func = load_curved_3d_data
-        params = ["radial_coeff", "pitch_coeff", "azimuthal_coeff"]
-    elif args.data_type == 'trackml':
-        data_func = load_trackml_data
-        out_size = 5
-        params = ["theta", "sinphi", "cosphi", "q", 'log_p']
-
-    transformer = TransformerRegressor(num_encoder_layers=args.nr_enc_layers,
-                                        d_model=args.embedding_size,
-                                        n_head=args.nr_heads,
-                                        input_size=in_size,
-                                        output_size=out_size,
-                                        dim_feedforward=args.hidden_dim,
-                                        dropout=args.dropout)
-    transformer = transformer.to(DEVICE)
-
-    checkpoint = torch.load(args.model_name, map_location=torch.device('cpu'))
-    transformer.load_state_dict(checkpoint['model_state_dict'])
-    pytorch_total_params = sum(p.numel() for p in transformer.parameters() if p.requires_grad)
-    print("Total trainable params: {}".format(pytorch_total_params))
+# Import supporting tools
+from utils.io_utils import load_config, setup_logging, unique_output_dir, copy_config_to_output, get_file_path
+from utils.wandb_utils import WandbLogger
+import argparse
+import logging
+import os, sys
+from time import gmtime, strftime
+from coolname import generate_slug
 
 
-    hits_data, track_params_data, track_classes_data = data_func(data=args.data_path, max_num_hits=args.max_nr_hits)
-    dataset = HitsDataset(hits_data, track_params_data, track_classes_data)
-    train_loader, valid_loader, test_loader = get_dataloaders(dataset,
-                                                                train_frac=0.7,
-                                                                valid_frac=0.15,
-                                                                test_frac=0.15,
-                                                                batch_size=1)
-    print('data loaded')
+def load_model(config, device):
+    # model
+    model = TransformerRegressor(
+        num_encoder_layers = config['model']['num_encoder_layers'],
+        d_model = config['model']['d_model'],
+        n_head=config['model']['n_head'],
+        input_size = config['model']['input_size'],
+        output_size = config['model']['output_size'],
+        dim_feedforward=config['model']['dim_feedforward'],
+        dropout=config['model']['dropout']
+    ).to(device)
 
-    for cl_size in [3, 4, 5, 6, 7]:
-        for min_sam in [2, 3, 4, 5, 6]:
-            preds, score, perfect, double_maj, lhc = predict(transformer, test_loader, cl_size, min_sam, args.data_type)
+    if 'checkpoint_path' not in config['model'] or not config['model']['checkpoint_path']:
+        logging.error('Checkpoint path must be provided for evaluation.')
+    else:
+        checkpoint = torch.load(config['model']['checkpoint_path'])
+        model.load_state_dict(checkpoint['model_state'])
+        epoch = checkpoint['epoch'] + 1
+        logging.info(f'Loaded model_state of epoch {epoch}. Ignoring optimizer_state. Starting evaluation from checkpoint.')
+
+    model.eval()
+    return model 
+
+def main(config_path):
+        #Create unique run name
+    run_name = generate_slug(3)+"_eval"
+    # Load the configuration file
+    config = load_config(config_path)
+    # Create the output directory
+    output_dir = unique_output_dir(config, run_name) # with time stamp and run name
+    copy_config_to_output(config_path, output_dir)
+    # Set up logging
+    setup_logging(config, output_dir)
+    # Set up wandb
+    wandb_logger = WandbLogger(config=config["wandb"],
+                                output_dir=output_dir,
+                                run_name=run_name,
+                                job_type="evaluation")
+    wandb_logger.initialize()
+    # Log the configuration
+    logging.info(f'output_dir: {output_dir}')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logging.info(f'Device: {device}')
+
+    torch.manual_seed(37)  # for reproducibility
+    data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
+    hits_data, track_params_data, track_classes_data = load_trackml_data(data=data_path)
+    dataset = HitsDataset(device, hits_data, track_params_data, track_classes_data)
+    _, _, test_loader = get_dataloaders(dataset,
+                                                              train_frac=0.7,
+                                                              valid_frac=0.15,
+                                                              test_frac=0.15,
+                                                              batch_size=64)
+    print(strftime("%Y-%m-%d %H:%M:%S", gmtime()))
+    print("data loaded")
+
+    logging.info("Started evaluation")
+
+
+
+    for cl_size in [5, 6]:
+        for min_sam in [2, 3, 4]:
+            preds, score, perfect, double_maj, lhc = predict(model, test_loader, cl_size, min_sam, args.data_type)
             print(f'cluster size {cl_size}, min samples {min_sam}, score {score}', flush=True)
             print(perfect, double_maj, lhc, flush=True)
 
@@ -80,3 +86,16 @@ if __name__ == "__main__":
                 preds = list(preds.values())
                 #for param in params:
                 #    plot_heatmap(preds, param, args.model_name)
+
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logging.info(f"Total Trainable Parameters: {total_params}")
+    wandb_logger.finish()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Evaluate a model with a given config file.")
+    parser.add_argument('config_path', type=str, help='Path to the configuration TOML file.')
+    
+    # Parse arguments
+    args = parser.parse_args()
+    main(args.config_path)
