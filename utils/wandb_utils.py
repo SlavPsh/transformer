@@ -56,8 +56,8 @@ class WandbLogger:
         file_path = os.path.join(output_dir, model_name)
 
         checkpoint = {
-            'model_state': model.state_dict(),
-            'optimizer_state': optimizer.state_dict(),
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
             'epoch': epoch
         }
         torch.save(checkpoint, file_path)

@@ -1,7 +1,7 @@
 import torch
 from model import TransformerRegressor
 from data_processing.dataset import HitsDataset, get_dataloaders
-from data_processing.dataset import load_trackml_data
+from data_processing.dataset import load_trackml_data, PAD_TOKEN
 from evaluation.scoring import calc_score_trackml
 from training import clustering
 #from evaluation.plotting import plot_heatmap
@@ -32,8 +32,12 @@ def load_model(config, device):
     if 'checkpoint_path' not in config['model'] or not config['model']['checkpoint_path']:
         logging.error('Checkpoint path must be provided for evaluation.')
     else:
-        checkpoint = torch.load(config['model']['checkpoint_path'])
-        model.load_state_dict(checkpoint['model_state'])
+        if device.type == 'cpu':
+            checkpoint = torch.load(config['model']['checkpoint_path'], map_location=torch.device('cpu'))
+        else:
+            checkpoint = torch.load(config['model']['checkpoint_path'])
+
+        model.load_state_dict(checkpoint['model_state_dict'])
         epoch = checkpoint['epoch'] + 1
         logging.info(f'Loaded model_state of epoch {epoch}. Ignoring optimizer_state. Starting evaluation from checkpoint.')
 
@@ -112,6 +116,7 @@ def main(config_path):
                                                               batch_size=64)
     print(strftime("%Y-%m-%d %H:%M:%S", gmtime()))
     print("data loaded")
+    logging.info("Data loaded")
 
     model = load_model(config, device)  
 
@@ -119,7 +124,7 @@ def main(config_path):
 
     for cl_size in [5, 6]:
         for min_sam in [2, 3, 4]:
-            preds, score, perfect, double_maj, lhc = predict(model, test_loader, cl_size, min_sam, args.data_type)
+            preds, score, perfect, double_maj, lhc = predict(model, test_loader, cl_size, min_sam)
             print(f'cluster size {cl_size}, min samples {min_sam}, score {score}', flush=True)
             print(perfect, double_maj, lhc, flush=True)
 
