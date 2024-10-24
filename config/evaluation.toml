@@ -27,7 +27,7 @@ batch_size = 64
 
 
 [output]
-base_path = "/data/atlas/users/spshenov/trained_models"
+base_path = "/data/atlas/users/spshenov/evaluation"
 
 [logging]
 level = "INFO"
