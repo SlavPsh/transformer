@@ -51,7 +51,7 @@ def setup_training(config, device):
             model.load_state_dict(checkpoint['model_state'])
             optimizer.load_state_dict(checkpoint['optimizer_state'])
             start_epoch = checkpoint['epoch'] + 1
-            logging.info("Resuming training from checkpoint.")
+            logging.info(f"Resuming training from checkpoint: {config['training']['checkpoint_path']}. Starting from epoch {start_epoch}.")
     else:
         start_epoch = 0
         if 'checkpoint_path' in config['training'] and config['training']['checkpoint_path']:
@@ -163,6 +163,8 @@ def main(config_path):
     copy_config_to_output(config_path, output_dir)
     # Set up logging
     setup_logging(config, output_dir)
+    logging.info(f'Loading config from {config_path} ')
+    logging.info(f'Output_dir: {output_dir}')
     # Set up wandb
     wandb_logger = WandbLogger(config=config["wandb"],
                                 output_dir=output_dir,
@@ -170,7 +172,7 @@ def main(config_path):
                                 job_type="training")
     wandb_logger.initialize()
     # Log the configuration
-    logging.info(f'output_dir: {output_dir}')
+    
     early_stopping_epoch = config['training']['early_stopping']['patience']
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -178,6 +180,7 @@ def main(config_path):
 
     torch.manual_seed(37)  # for reproducibility
     data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
+    logging.info(f'Loading data from {data_path} ...')
     hits_data, track_params_data, track_classes_data = load_trackml_data(data=data_path)
     dataset = HitsDataset(device, hits_data, track_params_data, track_classes_data)
     train_loader, valid_loader, _ = get_dataloaders(dataset,
@@ -186,7 +189,7 @@ def main(config_path):
                                                               test_frac=0.15,
                                                               batch_size=64)
     print(strftime("%Y-%m-%d %H:%M:%S", gmtime()))
-    print("data loaded")
+    print("Data loaded")
 
     # Set up the model, optimizer, and loss function
     model, optimizer, loss_fn, start_epoch = setup_training(config, device)

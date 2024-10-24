@@ -42,6 +42,7 @@ def load_model(config, device):
 
         model.load_state_dict(checkpoint['model_state_dict'])
         epoch = checkpoint['epoch'] + 1
+        logging.info(f'Loaded checkpoint from {config["model"]["checkpoint_path"]}')
         logging.info(f'Loaded model_state of epoch {epoch}. Ignoring optimizer_state. Starting evaluation from checkpoint.')
 
     model.eval()
@@ -152,19 +153,21 @@ def main(config_path):
     copy_config_to_output(config_path, output_dir)
     # Set up logging in the output directory
     setup_logging(config, output_dir, job="evaluation")
+    logging.info(f'Loading config from {config_path} ')
+    logging.info(f'Output_dir: {output_dir}')
     # Set up wandb
     wandb_logger = WandbLogger(config=config["wandb"],
                                 output_dir=output_dir,
                                 run_name=run_name,
                                 job_type="evaluation")
     wandb_logger.initialize()
-    # Log the configuration
-    logging.info(f'output_dir: {output_dir}')
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Device: {device}')
 
     torch.manual_seed(37)  # for reproducibility
     data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
+    logging.info(f'Loading data from {data_path} ...')
     hits_data, track_params_data, track_classes_data = load_trackml_data(data=data_path)
     dataset = HitsDataset(device, hits_data, track_params_data, track_classes_data)
     _, _, test_loader = get_dataloaders(dataset,
