@@ -25,10 +25,10 @@ def visualize_event(data):
     '''
     fig = plt.figure(figsize=(10, 10))
     ax = fig.add_subplot(111, projection='3d')
-
+    data['rho'] = np.sqrt(data['x']**2 + data['y']**2+data['z']**2)
     for _, group in data[data['event_id'] == 0].groupby('particle_id'):
-        # Sort the group by hit 'z'
-        group = group.sort_values(by='z') 
+        # Sort the group by hit 'rho' values
+        group = group.sort_values(by='rho') 
 
         # Plotting each track
         ax.plot(group['x'], group['y'], group['z'], alpha=0.3, marker='o')

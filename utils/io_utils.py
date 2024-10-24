@@ -12,9 +12,9 @@ def load_config(config_path):
         config = toml.load(config_file)
     return config
 
-def setup_logging(config, output_dir):
+def setup_logging(config, output_dir, job='training'):
     level = getattr(logging, config["logging"]["level"].upper(), logging.INFO)
-    log_file = os.path.join(output_dir, 'training.log')
+    log_file = os.path.join(output_dir, f'{job}.log')
     logging.basicConfig(level=level, format='%(asctime)s - %(levelname)s - %(message)s',
                         handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
 

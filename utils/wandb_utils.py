@@ -18,6 +18,7 @@ class WandbLogger:
         self.output_dir = output_dir
         self.initialized = False
         self.job_type = job_type
+        self.sweep_id = None
     
     def get_run_name(self):
         return self.run_name
@@ -32,16 +33,35 @@ class WandbLogger:
                 dir=self.output_dir,
                 job_type=self.job_type,
             )
+
             self.initialized = True
 
+    def initialize_sweep(self):
+        if not self.initialized:
+            self.initialize()
+            # Extract sweep configuration
+            sweep_config = {
+                'method': self.config['sweep']['method'],
+                'metric': {
+                    'name': self.config['sweep']['metric_name'],
+                    'goal': self.config['sweep']['metric_goal']
+                },
+                'parameters': self.config['sweep']['parameters']
+            }
+            self.sweep_id = wandb.sweep(sweep_config, project=self.project_name)
+            print(f'Sweep ID: {self.sweep_id}')
+    
+    def get_config(self):
+        return wandb.config
+    
     def log(self, data):
         if not self.initialized:
-            initialize()
+            self.initialize()
         wandb.log(data)
 
     def log_gradient_norm(self, model):
         if not self.initialized:
-            initialize()
+            self.initialize()
         total_norm = 0
         for p in model.parameters():
             param_norm = p.grad.data.norm(2)
@@ -52,7 +72,7 @@ class WandbLogger:
 
     def save_model(self, model, model_name, optimizer, epoch, output_dir):
         if not self.initialized:
-            initialize()
+            self.initialize()
         file_path = os.path.join(output_dir, model_name)
 
         checkpoint = {
@@ -65,6 +85,11 @@ class WandbLogger:
         artifact = wandb.Artifact('model', type='model')
         artifact.add_file(file_path)
         self.run.log_artifact(artifact)
+
+    def run_sweep(self, func, count=2):
+        if self.sweep_id is None:
+            self.initialize_sweep()
+        wandb.agent(self.sweep_id, function=func, count=count)
 
     def finish(self):
         if self.initialized:

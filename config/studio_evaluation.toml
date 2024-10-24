@@ -35,3 +35,12 @@ level = "INFO"
 [wandb]
 entity = "spshenov-university-of-amsterdam"
 project_name = "transformer_for_particle_tracking"
+
+[sweep]
+method = "random"  # or 'grid', 'bayes'
+metric_name = "test/event score"
+metric_goal = "maximize"  # or 'minimize'
+
+[sweep.parameters]
+min_cl_size = {values = [5]}
+min_samples = {values = [3, 4]}

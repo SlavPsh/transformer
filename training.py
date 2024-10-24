@@ -180,7 +180,7 @@ def main(config_path):
     data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
     hits_data, track_params_data, track_classes_data = load_trackml_data(data=data_path)
     dataset = HitsDataset(device, hits_data, track_params_data, track_classes_data)
-    train_loader, valid_loader, test_loader = get_dataloaders(dataset,
+    train_loader, valid_loader, _ = get_dataloaders(dataset,
                                                               train_frac=0.7,
                                                               valid_frac=0.15,
                                                               test_frac=0.15,
@@ -214,6 +214,8 @@ def main(config_path):
         print(f"Epoch: {epoch}\nVal loss: {val_loss:.10f}, Train loss: {train_loss:.10f}", flush=True)
         train_losses.append(train_loss)
         val_losses.append(val_loss)
+
+        wandb_logger.log({'train/train_loss' : train_loss, 'train/epoch' : epoch, 'train/validation loss' : val_loss})
 
         if val_loss < min_val_loss:
             # If the model has a new best validation loss, save it as "the best"

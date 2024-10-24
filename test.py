@@ -2,7 +2,7 @@ import torch
 from model import TransformerRegressor
 from data_processing.dataset import HitsDataset, get_dataloaders
 from data_processing.dataset import load_trackml_data, PAD_TOKEN
-from evaluation.scoring import calc_score_trackml
+from evaluation.scoring import calc_score_trackml, calculate_bined_scores
 from training import clustering
 #from evaluation.plotting import plot_heatmap
 
@@ -12,9 +12,12 @@ from utils.io_utils import load_config, setup_logging, unique_output_dir, copy_c
 from utils.wandb_utils import WandbLogger
 import argparse
 import logging
-import os, sys
 from time import gmtime, strftime
 from coolname import generate_slug
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import wandb
 
 
 def load_model(config, device):
@@ -44,7 +47,7 @@ def load_model(config, device):
     model.eval()
     return model 
 
-def predict(model, test_loader, min_cl_size, min_samples):
+def predict(model, test_loader, min_cl_size, min_samples, wandb_logger=None):
     '''
     Evaluates the network on the test data. Returns the predictions and scores.
     '''
@@ -53,9 +56,23 @@ def predict(model, test_loader, min_cl_size, min_samples):
     model.eval()
     predictions = {}
     score, perfects, doubles, lhcs = 0., 0., 0., 0.
-    for data in test_loader:
-        event_id, hits, track_params, track_labels = data
+    # Define the min, max, and step for each parameter
+    # MOve this to the config file
+    bin_ranges = {
+        'log_p': {'min': -3, 'max': 5, 'step': 0.5},
+        'theta': {'min': 0, 'max': np.pi, 'step': np.pi/10},
+        'q': {'min': -2, 'max': 1, 'step': 1},
+        'sinphi': {'min': -1, 'max': 1, 'step': 0.2}
+    }
 
+    # Initialize a dictionary to store bin scores for all events
+    combined_bin_scores = {param: [] for param in bin_ranges.keys()}
+
+    for data in test_loader:
+        # data is per event
+        # Split the data for this event
+        event_id, hits, track_params, track_labels = data
+ 
         # Make prediction
         padding_mask = (hits == PAD_TOKEN).all(dim=2)
         pred = model(hits, padding_mask)
@@ -65,22 +82,63 @@ def predict(model, test_loader, min_cl_size, min_samples):
         track_params = torch.unsqueeze(track_params[~padding_mask], 0)
         track_labels = torch.unsqueeze(track_labels[~padding_mask], 0)
 
+        
         # For evaluating the clustering performance on the (noisy) ground truth
         # noise = np.random.laplace(0, 0.05, size=(track_params.shape[0], track_params.shape[1], track_params.shape[2]))
         # track_params += noise
         # cluster_labels = clustering(track_params, min_cl_size, min_samples)
 
+
         cluster_labels = clustering(pred, min_cl_size, min_samples)
 
-        event_score, scores = calc_score_trackml(cluster_labels[0], track_labels[0])
+        event_score, scores, nr_particles, event_tracks = calc_score_trackml(cluster_labels[0], track_labels[0], track_params[0])
 
         score += event_score
         perfects += scores[0]
         doubles += scores[1]
         lhcs += scores[2]
 
+        # ToDo : create bins on log_p , go through the bins and calculate maj_weight of each track that falls in the bin
+        # and maj_weight of each track that falls in the bin and has a 'good' set to 1
+        # Eventually move the bins to the config file
+        bin_scores = calculate_bined_scores(event_tracks, bin_ranges)
+        for param, scores in bin_scores.items():
+            combined_bin_scores[param].append(scores)
+
+        if wandb_logger != None:
+            metrics = {'test/event_id' : event_id[0],
+                       'test/event score' : event_score, 
+                       'test/num_hits_per_event' : len(hits[0]),
+                       'test/num_particles_per_event' : nr_particles
+                       }
+            wandb_logger.log(metrics)
+
         for _, e_id in enumerate(event_id):
             predictions[e_id.item()] = (hits, pred, track_params, cluster_labels, track_labels, event_score)
+
+    # Aggregate the bin scores across all events for each parameter
+    aggregated_bin_scores = {}
+    for param in bin_ranges.keys():
+        all_bin_scores_df = pd.concat(combined_bin_scores[param])
+        aggregated_bin_scores[param] = all_bin_scores_df.groupby(f'{param}_bin', observed=False).sum().reset_index()
+
+    # Plot the percentage of good_major_weight over total_major_weight per bin and log to wandb
+    for param, df in aggregated_bin_scores.items():
+        df['percentage_good_major_weight'] = (df['good_major_weight'] / df['total_major_weight']) * 100
+        plt.figure()
+        x = df[f'{param}_bin'].astype(str)
+        y = df['percentage_good_major_weight']
+        plt.plot(x, y, marker='o', color='black')
+        plt.fill_between(x, y, 0, where=(y >= 0), facecolor='blue', alpha=0.8)
+        plt.fill_between(x, y, y.max(), where=(y >= 0), facecolor='red', alpha=0.3)
+        plt.title(f'Percentage of Good Major Weight vs Total Major Weight for {param}')
+        plt.xlabel(f'{param} Bins')
+        plt.ylabel('Percentage (%)')
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        if wandb_logger is not None:
+            wandb_logger.log({f'aggregated_bin_scores_{param}': wandb.Image(plt)})
+        plt.close()
 
     return predictions, score/len(test_loader), perfects/len(test_loader), doubles/len(test_loader), lhcs/len(test_loader)
 
@@ -92,8 +150,8 @@ def main(config_path):
     # Create the output directory
     output_dir = unique_output_dir(config, run_name) # with time stamp and run name
     copy_config_to_output(config_path, output_dir)
-    # Set up logging
-    setup_logging(config, output_dir)
+    # Set up logging in the output directory
+    setup_logging(config, output_dir, job="evaluation")
     # Set up wandb
     wandb_logger = WandbLogger(config=config["wandb"],
                                 output_dir=output_dir,
@@ -110,29 +168,32 @@ def main(config_path):
     hits_data, track_params_data, track_classes_data = load_trackml_data(data=data_path)
     dataset = HitsDataset(device, hits_data, track_params_data, track_classes_data)
     _, _, test_loader = get_dataloaders(dataset,
-                                                              train_frac=0.7,
-                                                              valid_frac=0.15,
-                                                              test_frac=0.15,
-                                                              batch_size=64)
+                                        train_frac=0.7,
+                                        valid_frac=0.15,
+                                        test_frac=0.15,
+                                        batch_size=64)
     print(strftime("%Y-%m-%d %H:%M:%S", gmtime()))
-    print("data loaded")
+    print("Data loaded")
     logging.info("Data loaded")
 
     model = load_model(config, device)  
 
     logging.info("Started evaluation")
 
-    for cl_size in [5, 6]:
-        for min_sam in [2, 3, 4]:
-            preds, score, perfect, double_maj, lhc = predict(model, test_loader, cl_size, min_sam)
-            print(f'cluster size {cl_size}, min samples {min_sam}, score {score}', flush=True)
-            print(perfect, double_maj, lhc, flush=True)
+    cl_size = 5
+    min_sam = 4
+    preds, score, perfect, double_maj, lhc = predict(model, test_loader, cl_size, min_sam, wandb_logger)
+    print(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}', flush=True)
+    logging.info(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}')
+    #print(perfect, double_maj, lhc, flush=True)
 
-            if cl_size == 5 and min_sam == 2:
-                preds = list(preds.values())
-                #for param in params:
-                #    plot_heatmap(preds, param, args.model_name)
+    wandb_logger.log({'test/cluster size' : cl_size, 'test/min sample size' : min_sam,'test/trackML score': score})
 
+    if cl_size == 5 and min_sam == 3:
+        preds = list(preds.values())
+        #for param in params:
+        #    plot_heatmap(preds, param, args.model_name)
+    
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logging.info(f"Total Trainable Parameters: {total_params}")
     wandb_logger.finish()

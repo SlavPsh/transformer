@@ -67,7 +67,7 @@ def _analyze_tracks(truth, submission):
             cur_weight = hit.weight
             maj_particle_id = -1
             maj_nhits = 0
-            maj_weights = 0
+            maj_weight = 0 
             continue
 
         # hit is part of the current reconstructed track
@@ -105,20 +105,34 @@ def _analyze_tracks(truth, submission):
     return pd.DataFrame.from_records(tracks, columns=cols)
 
 
-def score_event(tracks):
+def score_event(tracks, hits_with_params=None):
     """Compute the TrackML event score for a single event.
 
     Parameters
     ----------
-    truth : pandas.DataFrame
-        Truth information. Must have hit_id, particle_id, and weight columns.
-    submission : pandas.DataFrame
-        Proposed hit/track association. Must have hit_id and track_id columns.
+    tracks : pandas dataframe containing reconstructed tracks and their associated particle IDs,
+                together with the number of hits in the track and the number of hits in the particle,
+                as well as the weight of the hits.
+    hit_truth_track_params : pandas dataframe containing the truth information of the track paramters
+                for each particle. Default is None.
     """
+    # Merge tracks with particle_truth_track_params to get the parameters
+    if hits_with_params is not None:
+        tracks = tracks.merge(hits_with_params, left_on='major_particle_id', right_on='particle_id', how='left')
+    
+    # Calculate the purity of the tracks
     purity_rec = np.true_divide(tracks['major_nhits'], tracks['nhits'])
     purity_maj = np.true_divide(tracks['major_nhits'], tracks['major_particle_nhits'])
     good_track = (0.5 < purity_rec) & (0.5 < purity_maj)
-    return tracks['major_weight'][good_track].sum()
+
+    tracks['good'] = good_track.astype(int)
+
+    # Compute the total score
+    total_score = tracks['major_weight'][good_track].sum()
+
+    return total_score, tracks
+
+
 
 def efficiency_scores(tracks, n_particles, predicted_count_thld=3):
     """
@@ -170,26 +184,72 @@ def calc_score(pred_lbl, true_lbl):
     tracks = _analyze_tracks(truth, submission) 
     return score_event(tracks), efficiency_scores(tracks, nr_particles)
 
+def calculate_bined_scores(tracks, bin_ranges):
+    # Extract bin_params from the keys of bin_ranges
+    bin_params = list(bin_ranges.keys())
 
-def calc_score_trackml(pred_lbl, true_lbl):
+    # Generate bin edges using numpy.arange
+    bins = {param: np.arange(bin_ranges[param]['min'], bin_ranges[param]['max'] + bin_ranges[param]['step'], bin_ranges[param]['step']) for param in bin_params}
+
+    # Initialize a dictionary to store bin scores for each parameter
+    all_bin_scores = {}
+
+    for param in bin_params:
+        # Create bins for the parameter
+        tracks[f'{param}_bin'] = pd.cut(tracks[param], bins=bins[param])
+
+        # Group by the bins
+        grouped = tracks.groupby(f'{param}_bin', observed=False)
+
+        # Calculate the total major_weight for all tracks in each bin
+        total_major_weight = grouped['major_weight'].sum()
+
+        # Calculate the total major_weight for tracks with 'good' set to 1 in each bin
+        good_major_weight = grouped.apply(lambda df: df[df['good'] == 1]['major_weight'].sum())
+
+        # Combine the results into a single DataFrame
+        bin_scores = pd.DataFrame({
+            'total_major_weight': total_major_weight,
+            'good_major_weight': good_major_weight
+        }).reset_index()
+
+        # Store the bin scores in the dictionary
+        all_bin_scores[param] = bin_scores
+
+    return all_bin_scores
+
+
+def calc_score_trackml(pred_lbl, true_lbl, track_params):
     """
     Function for calculating the TrackML score and efficiency scores of TrackML data, based 
     on the predicted cluster labels pred_lbl and true particle IDs true_lbl from a single
     event. 
     """
-    truth_rows, pred_rows = [], []
+    truth_rows, pred_rows, track_params_rows = [], [], []
     for ind, part in enumerate(true_lbl):
         truth_rows.append((ind, part[0].item(), part[1].item()))
 
     for ind, pred in enumerate(pred_lbl):
         pred_rows.append((ind, pred.item()))
+    
+    for ind, part in enumerate(track_params):
+        track_params_rows.append((ind, part[0].item(), part[1].item(),part[2].item(), part[3].item(),part[4].item()))
 
     truth = pd.DataFrame(truth_rows)
     truth.columns = ['hit_id', 'particle_id', 'weight']
     submission = pd.DataFrame(pred_rows)
     submission.columns = ['hit_id', 'track_id']
 
+    track_params_df = pd.DataFrame(track_params_rows)
+    track_params_df.columns = ['hit_id', 'theta', 'sinphi', 'cosphi', 'q', 'log_p']
+
     nr_particles = len(truth['particle_id'].unique().tolist())
 
     tracks = _analyze_tracks(truth, submission) 
-    return score_event(tracks), efficiency_scores(tracks, nr_particles)
+
+    hits_with_params = pd.merge(track_params_df, truth, on='hit_id')
+    hits_with_params = hits_with_params.drop_duplicates(subset='particle_id')
+
+    event_score, event_tracks = score_event(tracks, hits_with_params)
+
+    return event_score, efficiency_scores(tracks, nr_particles), nr_particles, event_tracks
