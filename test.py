@@ -132,6 +132,7 @@ def predict(model, test_loader, min_cl_size, min_samples, wandb_logger=None):
         plt.plot(x, y, marker='o', color='black')
         plt.fill_between(x, y, 0, where=(y >= 0), facecolor='blue', alpha=0.8)
         plt.fill_between(x, y, y.max(), where=(y >= 0), facecolor='red', alpha=0.3)
+        plt.ylim(60, 100)  # Set y-axis range from 60% to 100%
         plt.title(f'Percentage of Good Major Weight vs Total Major Weight for {param}')
         plt.xlabel(f'{param} Bins')
         plt.ylabel('Percentage (%)')
