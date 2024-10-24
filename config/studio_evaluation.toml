@@ -6,12 +6,10 @@ description = "Evaluating a model with attention distance mask"
 [data]
 data_dir = "/data/atlas/users/spshenov/ml_input_data"
 data_file = "trackml_tiny_10to50tracks_100events.csv"
-dataloader_num_workers = 4
-num_classes = 451
 
 
 [model]
-checkpoint_path = "/data/atlas/users/spshenov/trained_models/20241022_141723_meteoric-capable-orangutan/model_best.pth"
+checkpoint_path = "/data/atlas/users/spshenov/trained_models/models_5_features_600epochs/model_trackml_10to50_best.pth"
 num_encoder_layers = 6
 d_model = 32
 n_head = 4
