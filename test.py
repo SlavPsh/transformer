@@ -63,7 +63,7 @@ def predict(model, test_loader, min_cl_size, min_samples, wandb_logger=None):
         'log_p': {'min': -3, 'max': 5, 'step': 0.5},
         'theta': {'min': 0, 'max': np.pi, 'step': np.pi/10},
         'q': {'min': -2, 'max': 1, 'step': 1},
-        'sinphi': {'min': -1, 'max': 1, 'step': 0.2}
+        'sin_phi': {'min': -1, 'max': 1, 'step': 0.2}
     }
 
     # Initialize a dictionary to store bin scores for all events
@@ -92,7 +92,7 @@ def predict(model, test_loader, min_cl_size, min_samples, wandb_logger=None):
 
         cluster_labels = clustering(pred, min_cl_size, min_samples)
 
-        event_score, scores, nr_particles, event_tracks = calc_score_trackml(cluster_labels[0], track_labels[0], track_params[0])
+        event_score, scores, nr_particles, event_tracks = calc_score_trackml(cluster_labels[0], track_labels[0])
 
         score += event_score
         perfects += scores[0]
@@ -132,7 +132,7 @@ def predict(model, test_loader, min_cl_size, min_samples, wandb_logger=None):
         plt.plot(x, y, marker='o', color='black')
         plt.fill_between(x, y, 0, where=(y >= 0), facecolor='blue', alpha=0.8)
         plt.fill_between(x, y, y.max(), where=(y >= 0), facecolor='red', alpha=0.3)
-        plt.ylim(60, 100)  # Set y-axis range from 60% to 100%
+        plt.ylim(90, 100)  # Set y-axis range from 60% to 100%
         plt.title(f'Percentage of Good Major Weight vs Total Major Weight for {param}')
         plt.xlabel(f'{param} Bins')
         plt.ylabel('Percentage (%)')
@@ -169,8 +169,8 @@ def main(config_path):
     torch.manual_seed(37)  # for reproducibility
     data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
     logging.info(f'Loading data from {data_path} ...')
-    hits_data, track_params_data, track_classes_data = load_trackml_data(data=data_path)
-    dataset = HitsDataset(device, hits_data, track_params_data, track_classes_data)
+    hits_data, track_params_data, track_particle_data = load_trackml_data(data=data_path)
+    dataset = HitsDataset(device, hits_data, track_params_data, track_particle_data)
     _, _, test_loader = get_dataloaders(dataset,
                                         train_frac=0.7,
                                         valid_frac=0.15,

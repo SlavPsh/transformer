@@ -105,7 +105,7 @@ def _analyze_tracks(truth, submission):
     return pd.DataFrame.from_records(tracks, columns=cols)
 
 
-def score_event(tracks, hits_with_params=None):
+def score_event(tracks):
     """Compute the TrackML event score for a single event.
 
     Parameters
@@ -116,9 +116,6 @@ def score_event(tracks, hits_with_params=None):
     hit_truth_track_params : pandas dataframe containing the truth information of the track paramters
                 for each particle. Default is None.
     """
-    # Merge tracks with particle_truth_track_params to get the parameters
-    if hits_with_params is not None:
-        tracks = tracks.merge(hits_with_params, left_on='major_particle_id', right_on='particle_id', how='left')
     
     # Calculate the purity of the tracks
     purity_rec = np.true_divide(tracks['major_nhits'], tracks['nhits'])
@@ -130,7 +127,7 @@ def score_event(tracks, hits_with_params=None):
     # Compute the total score
     total_score = tracks['major_weight'][good_track].sum()
 
-    return total_score, tracks
+    return total_score
 
 
 
@@ -219,37 +216,31 @@ def calculate_bined_scores(tracks, bin_ranges):
     return all_bin_scores
 
 
-def calc_score_trackml(pred_lbl, true_lbl, track_params):
+def calc_score_trackml(pred_lbl, true_lbl):
     """
     Function for calculating the TrackML score and efficiency scores of TrackML data, based 
     on the predicted cluster labels pred_lbl and true particle IDs true_lbl from a single
     event. 
     """
-    truth_rows, pred_rows, track_params_rows = [], [], []
+    truth_rows, pred_rows = [], []
     for ind, part in enumerate(true_lbl):
-        truth_rows.append((ind, part[0].item(), part[1].item()))
+        truth_rows.append((ind, part[0].item(), part[1].item(), part[2].item(), part[3].item(), part[4].item(), part[5].item()))
 
     for ind, pred in enumerate(pred_lbl):
         pred_rows.append((ind, pred.item()))
     
-    for ind, part in enumerate(track_params):
-        track_params_rows.append((ind, part[0].item(), part[1].item(),part[2].item(), part[3].item(),part[4].item()))
-
     truth = pd.DataFrame(truth_rows)
-    truth.columns = ['hit_id', 'particle_id', 'weight']
+    truth.columns = ['hit_id', 'particle_id', 'weight', 'theta', 'sin_phi', 'q', 'log_p']
     submission = pd.DataFrame(pred_rows)
     submission.columns = ['hit_id', 'track_id']
-
-    track_params_df = pd.DataFrame(track_params_rows)
-    track_params_df.columns = ['hit_id', 'theta', 'sinphi', 'cosphi', 'q', 'log_p']
 
     nr_particles = len(truth['particle_id'].unique().tolist())
 
     tracks = _analyze_tracks(truth, submission) 
-
-    hits_with_params = pd.merge(track_params_df, truth, on='hit_id')
-    hits_with_params = hits_with_params.drop_duplicates(subset='particle_id')
-
-    event_score, event_tracks = score_event(tracks, hits_with_params)
-
-    return event_score, efficiency_scores(tracks, nr_particles), nr_particles, event_tracks
+    # Add additional columns to the tracks dataframe from particle info for analysis
+    
+    event_score = score_event(tracks)
+    truth_unique = truth[['particle_id', 'theta', 'sin_phi', 'q', 'log_p']].drop_duplicates(subset='particle_id')
+    
+    tracks = tracks.merge(truth_unique[['particle_id', 'theta', 'sin_phi', 'q', 'log_p']], left_on='major_particle_id', right_on='particle_id', how='left')
+    return event_score, efficiency_scores(tracks, nr_particles), nr_particles, tracks
