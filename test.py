@@ -94,15 +94,6 @@ def predict(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_logg
         bin_scores = calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges)
         for param, scores in bin_scores.items():
             combined_bin_scores[param].append(scores)
-
-
-            # Calculate the summed weights per bin
-            total_major_weight_sum = scores['total_major_weight'].sum()
-            good_major_weight_sum = scores['good_major_weight'].sum()
-            total_true_weight_sum = scores['total_true_weight'].sum()
-
-            # Calculate the ratio of summed weights per bin
-            ratio = good_major_weight_sum / total_true_weight_sum if total_true_weight_sum != 0 else 0
            
 
         if wandb_logger != None:
@@ -124,14 +115,14 @@ def predict(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_logg
 
     # Plot the percentage of good_major_weight over total_major_weight per bin and log to wandb
     for param, df in aggregated_bin_scores.items():
-        df['percentage_good_major_weight'] = (df['good_major_weight'] / df['total_major_weight']) * 100
+        df['percentage_good_major_weight'] = (df['good_major_weight'] / df['total_true_weight']) * 100
         plt.figure()
         x = df[f'{param}_bin'].astype(str)
         y = df['percentage_good_major_weight']
         plt.plot(x, y, marker='o', color='black')
         plt.fill_between(x, y, 0, where=(y >= 0), facecolor='blue', alpha=0.8)
         plt.fill_between(x, y, y.max(), where=(y >= 0), facecolor='red', alpha=0.3)
-        plt.ylim(90, 100)  # Set y-axis range from 60% to 100%
+        plt.ylim(85, 100)  # Set y-axis range for better resolution
         plt.title(f'Percentage of Good Major Weight vs Total Major Weight for {param}')
         plt.xlabel(f'{param} Bins')
         plt.ylabel('Percentage (%)')
