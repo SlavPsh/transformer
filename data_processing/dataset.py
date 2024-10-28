@@ -7,8 +7,9 @@ PAD_TOKEN = -1
 
 class HitsDataset(Dataset):
 
-    def __init__(self, device, hits_data, track_params_data=None, particle_data=None):
+    def __init__(self, device, hits_data, hists_masking, track_params_data=None, particle_data=None):
         self.hits_data = hits_data.to(device)
+        self.hits_masking = hists_masking.to(device)
         self.track_params_data = track_params_data.to(device)
         self.particle_data = particle_data.to(device)
         self.total_events = self.__len__()
@@ -17,7 +18,7 @@ class HitsDataset(Dataset):
         return self.hits_data.shape[0]
 
     def __getitem__(self, idx):
-        return idx, self.hits_data[idx], self.track_params_data[idx], self.particle_data[idx]
+        return idx, self.hits_data[idx], self.hits_masking[idx], self.track_params_data[idx], self.particle_data[idx]
 
 def get_dataloaders(dataset, train_frac, valid_frac, test_frac, batch_size):
     train_set, valid_set, test_set = random_split(dataset, [train_frac, valid_frac, test_frac], generator=torch.Generator().manual_seed(37))
@@ -66,6 +67,19 @@ def load_trackml_data(data, normalize=False, chunking=False):
         # Returns the hit coordinates as a padded sequence; this is the input to the transformer
         event_hit_data = event_rows[["x", "y", "z"]].to_numpy(dtype=np.float32)
         return np.pad(event_hit_data, [(0, max_num_hits-len(event_rows)), (0, 0)], "constant", constant_values=PAD_TOKEN)
+    
+    def extract_hits_data_for_masking(event_rows):
+        # Returns the hit coordinates as a padded sequence; this is the input to the transformer
+        event_hit_data = event_rows[["x", "y", "z"]].to_numpy(dtype=np.float32)
+        r_cyl = np.sqrt(event_hit_data[:,0]**2 + event_hit_data[:,1]**2)
+        rho = np.sqrt(event_hit_data[:,0]**2 + event_hit_data[:,1]**2 + event_hit_data[:,2]**2)
+        phi_cyl = np.arctan2(event_hit_data[:,1], event_hit_data[:,0])
+        theta_coord = np.arccos(event_hit_data[:,2]/rho)
+        eta_coord = -np.log(np.tan(theta_coord/2.))
+        
+        hits_data_for_masking = np.column_stack([event_hit_data[:,2], r_cyl, phi_cyl, eta_coord])
+        hits_data_for_masking_padded = np.pad(hits_data_for_masking, [(0, max_num_hits-len(event_rows)), (0, 0)], "constant", constant_values=PAD_TOKEN)
+        return hits_data_for_masking_padded
 
     def extract_track_params_data(event_rows):
         # Returns the track parameters as a padded sequence; this is what the transformer must regress
@@ -86,13 +100,15 @@ def load_trackml_data(data, normalize=False, chunking=False):
 
     # Get the hits, track params and their weights as sequences padded up to a max length
     grouped_hits_data = data_grouped_by_event.apply(extract_hits_data)
+    grouped_masking_data = data_grouped_by_event.apply(extract_hits_data_for_masking)
     grouped_track_params_data = data_grouped_by_event.apply(extract_track_params_data)
     grouped_particle_data = data_grouped_by_event.apply(extract_particle_data)
     
 
     # Stack them together into one tensor
     hits_data = torch.tensor(np.stack(grouped_hits_data.values))
+    hits_data_for_masking = torch.tensor(np.stack(grouped_masking_data.values))
     track_params_data = torch.tensor(np.stack(grouped_track_params_data.values))
     hit_particle_data = torch.tensor(np.stack(grouped_particle_data.values))
 
-    return hits_data, track_params_data, hit_particle_data
+    return hits_data, hits_data_for_masking, track_params_data, hit_particle_data

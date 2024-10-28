@@ -1,9 +1,8 @@
 import torch
-from model import TransformerRegressor
+from model import TransformerRegressor, clustering
 from data_processing.dataset import HitsDataset, get_dataloaders
 from data_processing.dataset import load_trackml_data, PAD_TOKEN
 from evaluation.scoring import calc_score_trackml, calculate_bined_scores
-from training import clustering
 #from evaluation.plotting import plot_heatmap
 
 
@@ -29,7 +28,8 @@ def load_model(config, device):
         input_size = config['model']['input_size'],
         output_size = config['model']['output_size'],
         dim_feedforward=config['model']['dim_feedforward'],
-        dropout=config['model']['dropout']
+        dropout=config['model']['dropout'],
+        use_att_mask=config['model']['use_att_mask']
     ).to(device)
 
     if 'checkpoint_path' not in config['model'] or not config['model']['checkpoint_path']:
@@ -42,6 +42,14 @@ def load_model(config, device):
 
         model.load_state_dict(checkpoint['model_state_dict'])
         epoch = checkpoint['epoch'] + 1
+        if 'att_mask_used' in checkpoint:
+            model.set_use_att_mask(checkpoint['att_mask_used'])
+            logging.info(f'Using attention mask is set to  {checkpoint['att_mask_used']}')
+        else:
+            model.set_use_att_mask(False)
+            logging.info(f'Using attention mask is set to False')
+
+        
         logging.info(f'Loaded checkpoint from {config["model"]["checkpoint_path"]}')
         logging.info(f'Loaded model_state of epoch {epoch}. Ignoring optimizer_state. Starting evaluation from checkpoint.')
 
@@ -64,11 +72,11 @@ def predict(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_logg
     for data in test_loader:
         # data is per event
         # Split the data for this event
-        event_id, hits, track_params, track_labels = data
+        event_id, hits, hits_masking, track_params, track_labels = data
  
         # Make prediction
         padding_mask = (hits == PAD_TOKEN).all(dim=2)
-        pred = model(hits, padding_mask)
+        pred = model(hits, hits_masking, padding_mask)
 
         hits = torch.unsqueeze(hits[~padding_mask], 0)
         pred = torch.unsqueeze(pred[~padding_mask], 0)
@@ -113,6 +121,8 @@ def predict(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_logg
         all_bin_scores_df = pd.concat(combined_bin_scores[param])
         aggregated_bin_scores[param] = all_bin_scores_df.groupby(f'{param}_bin', observed=False).sum().reset_index()
 
+    total_average_score = score/len(test_loader)
+
     # Plot the percentage of good_major_weight over total_major_weight per bin and log to wandb
     for param, df in aggregated_bin_scores.items():
         df['percentage_good_major_weight'] = (df['good_major_weight'] / df['total_true_weight']) * 100
@@ -121,9 +131,9 @@ def predict(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_logg
         y = df['percentage_good_major_weight']
         plt.plot(x, y, marker='o', color='black')
         plt.fill_between(x, y, 0, where=(y >= 0), facecolor='blue', alpha=0.8)
-        plt.fill_between(x, y, y.max(), where=(y >= 0), facecolor='red', alpha=0.3)
+        plt.fill_between(x, y, 100, where=(y >= 0), facecolor='red', alpha=0.3)
         plt.ylim(85, 100)  # Set y-axis range for better resolution
-        plt.title(f'Percentage of Good Major Weight vs Total Major Weight for {param}')
+        plt.title(f'Good Tracks Weight vs True Weight for {param}. Avg Score: {total_average_score*100:.1f}')
         plt.xlabel(f'{param} Bins')
         plt.ylabel('Percentage (%)')
         plt.xticks(rotation=45)
@@ -132,7 +142,7 @@ def predict(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_logg
             wandb_logger.log({f'aggregated_bin_scores_{param}': wandb.Image(plt)})
         plt.close()
 
-    return predictions, score/len(test_loader), perfects/len(test_loader), doubles/len(test_loader), lhcs/len(test_loader)
+    return predictions, total_average_score, perfects/len(test_loader), doubles/len(test_loader), lhcs/len(test_loader)
 
 def main(config_path):
         #Create unique run name
@@ -144,23 +154,23 @@ def main(config_path):
     copy_config_to_output(config_path, output_dir)
     # Set up logging in the output directory
     setup_logging(config, output_dir, job="evaluation")
-    logging.info(f'Loading config from {config_path} ')
-    logging.info(f'Output_dir: {output_dir}')
+
     # Set up wandb
     wandb_logger = WandbLogger(config=config["wandb"],
                                 output_dir=output_dir,
                                 run_name=run_name,
                                 job_type="evaluation")
     wandb_logger.initialize()
-
+    logging.info(f'Loading config from {config_path} ')
+    logging.info(f'Output_dir: {output_dir}')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Device: {device}')
 
     torch.manual_seed(37)  # for reproducibility
     data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
     logging.info(f'Loading data from {data_path} ...')
-    hits_data, track_params_data, track_particle_data = load_trackml_data(data=data_path)
-    dataset = HitsDataset(device, hits_data, track_params_data, track_particle_data)
+    hits_data, hits_masking, track_params_data, track_particle_data = load_trackml_data(data=data_path)
+    dataset = HitsDataset(device, hits_data, hits_masking, track_params_data, track_particle_data)
     _, _, test_loader = get_dataloaders(dataset,
                                         train_frac=0.7,
                                         valid_frac=0.15,

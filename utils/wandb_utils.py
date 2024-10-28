@@ -78,7 +78,8 @@ class WandbLogger:
         checkpoint = {
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            'epoch': epoch
+            'epoch': epoch,
+            'att_mask_used': model.att_mask_used
         }
         torch.save(checkpoint, file_path)
 

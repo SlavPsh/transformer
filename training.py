@@ -28,7 +28,8 @@ def setup_training(config, device):
         input_size = config['model']['input_size'],
         output_size = config['model']['output_size'],
         dim_feedforward=config['model']['dim_feedforward'],
-        dropout=config['model']['dropout']
+        dropout=config['model']['dropout'],
+        use_att_mask=config['model']['use_att_mask']
     ).to(device)
 
     # optimizer
@@ -51,6 +52,14 @@ def setup_training(config, device):
             model.load_state_dict(checkpoint['model_state'])
             optimizer.load_state_dict(checkpoint['optimizer_state'])
             start_epoch = checkpoint['epoch'] + 1
+            
+            if 'use_att_mask' in checkpoint:
+                model.set_use_att_mask(checkpoint['use_att_mask'])
+                logging.info(f'Using attention mask is set to  {checkpoint['use_att_mask']}')
+            else:
+                model.set_use_att_mask(False)
+                logging.info(f'Using attention mask is set to False')
+            
             logging.info(f"Resuming training from checkpoint: {config['training']['checkpoint_path']}. Starting from epoch {start_epoch}.")
     else:
         start_epoch = 0
@@ -70,14 +79,14 @@ def train_epoch(model, optim, train_loader, loss_fn):
     losses = 0.
 
     for data in train_loader:
-        _, hits, track_params, classes = data
+        _, hits, hits_masking, track_params, classes = data
         # Zero the gradients
 
         optim.zero_grad()
 
         # Make prediction
         padding_mask = (hits == PAD_TOKEN).all(dim=2)
-        pred = model(hits, padding_mask)
+        pred = model(hits, hits_masking, padding_mask)
 
         pred = torch.unsqueeze(pred[~padding_mask], 0)
         track_params = torch.unsqueeze(track_params[~padding_mask], 0)
@@ -104,10 +113,10 @@ def evaluate(model, validation_loader, loss_fn):
     losses = 0.
     with torch.no_grad():
         for data in validation_loader:
-            _, hits, track_params, classes = data
+            _, hits, hits_masking, track_params, classes = data
             # Make prediction
             padding_mask = (hits == PAD_TOKEN).all(dim=2)
-            pred = model(hits, padding_mask)
+            pred = model(hits, hits_masking, padding_mask)
 
             pred = torch.unsqueeze(pred[~padding_mask], 0)
             track_params = torch.unsqueeze(track_params[~padding_mask], 0)
@@ -163,8 +172,7 @@ def main(config_path):
     copy_config_to_output(config_path, output_dir)
     # Set up logging
     setup_logging(config, output_dir)
-    logging.info(f'Loading config from {config_path} ')
-    logging.info(f'Output_dir: {output_dir}')
+
     # Set up wandb
     wandb_logger = WandbLogger(config=config["wandb"],
                                 output_dir=output_dir,
@@ -172,7 +180,8 @@ def main(config_path):
                                 job_type="training")
     wandb_logger.initialize()
     # Log the configuration
-    
+    logging.info(f'Loading config from {config_path} ')
+    logging.info(f'Output_dir: {output_dir}')
     early_stopping_epoch = config['training']['early_stopping']['patience']
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -181,8 +190,8 @@ def main(config_path):
     torch.manual_seed(37)  # for reproducibility
     data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
     logging.info(f'Loading data from {data_path} ...')
-    hits_data, track_params_data, track_classes_data = load_trackml_data(data=data_path)
-    dataset = HitsDataset(device, hits_data, track_params_data, track_classes_data)
+    hits_data, hits_masking, track_params_data, track_classes_data = load_trackml_data(data=data_path)
+    dataset = HitsDataset(device, hits_data, hits_masking, track_params_data, track_classes_data)
     train_loader, valid_loader, _ = get_dataloaders(dataset,
                                                               train_frac=0.7,
                                                               valid_frac=0.15,
@@ -213,8 +222,8 @@ def main(config_path):
         val_loss = evaluate(model, valid_loader, loss_fn)
 
         # Print info to the cluster logging
-        print(strftime("%Y-%m-%d %H:%M:%S", gmtime()))
-        print(f"Epoch: {epoch}\nVal loss: {val_loss:.10f}, Train loss: {train_loss:.10f}", flush=True)
+        logging.info(strftime("%Y-%m-%d %H:%M:%S", gmtime()))
+        logging.info(f"Epoch: {epoch}\nVal loss: {val_loss:.10f}, Train loss: {train_loss:.10f}")
         train_losses.append(train_loss)
         val_losses.append(val_loss)
 
@@ -223,13 +232,13 @@ def main(config_path):
         if val_loss < min_val_loss:
             # If the model has a new best validation loss, save it as "the best"
             min_val_loss = val_loss
-            wandb_logger.save_model(model, f'model_best.pth', optimizer, epoch, output_dir)
-            logging.info("Checkpoint saved to output_dir. Best of run. Epoch: {epoch}")
+            wandb_logger.save_model(model, 'model_best.pth', optimizer, epoch, output_dir)
+            logging.info(f"Checkpoint saved to output_dir. Best of run. Epoch: {epoch}")
             count = 0
         else:
             # If the model's validation loss isn't better than the best, save it as "the last"
             wandb_logger.save_model(model, f'model_last.pth', optimizer, epoch, output_dir)
-            logging.info("Checkpoint saved to output_dir. Last of run. Epoch: {epoch}")
+            logging.info(f"Checkpoint saved to output_dir. Last of run. Epoch: {epoch}")
             count += 1
 
         if count >= early_stopping_epoch:
