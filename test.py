@@ -5,7 +5,6 @@ from data_processing.dataset import load_trackml_data, PAD_TOKEN
 from evaluation.scoring import calc_score_trackml, calculate_bined_scores
 #from evaluation.plotting import plot_heatmap
 
-
 # Import supporting tools
 from utils.io_utils import load_config, setup_logging, unique_output_dir, copy_config_to_output, get_file_path
 from utils.wandb_utils import WandbLogger

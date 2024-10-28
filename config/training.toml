@@ -5,11 +5,10 @@ description = "Training a model with attention distance mask"
 
 [data]
 data_dir = "/data/atlas/users/spshenov/ml_input_data"
-data_file = "trackml_tiny_10to50tracks_100events.csv"
-val_file = "sorted_val.pt"
-test_file = "sorted_test.pt"
-test_helperfile = "sorted_test_helper.pt"
-test_truthfile = "test_truths.csv"
+# trackml_tiny_10to50tracks_100events.csv
+# trackml_short_10to50_tracks_5k_events.csv
+# trackml_10to50tracks_40kevents.csv
+data_file = "trackml_10to50tracks_40kevents.csv"
 dataloader_num_workers = 4
 
 [model]
@@ -21,7 +20,7 @@ output_size = 5
 dim_feedforward = 128
 dropout = 0.1
 use_flash_attention = false
-use_att_mask = false
+use_att_mask = true
 
 [training]
 batch_size = 64
