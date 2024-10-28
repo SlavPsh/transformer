@@ -104,6 +104,28 @@ def _analyze_tracks(truth, submission):
             'major_nhits', 'major_weight']
     return pd.DataFrame.from_records(tracks, columns=cols)
 
+def get_good_tracks(tracks, purity_threshold=0.5):
+    """Get the good tracks from the tracks dataframe.
+
+    Parameters
+    ----------
+    tracks : pandas dataframe containing reconstructed tracks and their associated particle IDs,
+                together with the number of hits in the track and the number of hits in the particle,
+                as well as the weight of the hits.
+    purity_threshold : float, optional
+        The purity threshold for a track to be considered good. The default is 0.5.
+
+    Returns
+    -------
+    pandas dataframe
+        A dataframe containing the good tracks.
+    """
+    # Calculate the purity of the tracks
+    purity_rec = np.true_divide(tracks['major_nhits'], tracks['nhits'])
+    purity_maj = np.true_divide(tracks['major_nhits'], tracks['major_particle_nhits'])
+    good_track = (purity_rec > purity_threshold) & (purity_maj > purity_threshold)
+
+    return tracks[good_track]
 
 def score_event(tracks):
     """Compute the TrackML event score for a single event.
@@ -116,16 +138,9 @@ def score_event(tracks):
     hit_truth_track_params : pandas dataframe containing the truth information of the track paramters
                 for each particle. Default is None.
     """
-    
-    # Calculate the purity of the tracks
-    purity_rec = np.true_divide(tracks['major_nhits'], tracks['nhits'])
-    purity_maj = np.true_divide(tracks['major_nhits'], tracks['major_particle_nhits'])
-    good_track = (0.5 < purity_rec) & (0.5 < purity_maj)
-
-    tracks['good'] = good_track.astype(int)
-
     # Compute the total score
-    total_score = tracks['major_weight'][good_track].sum()
+    good_tracks = get_good_tracks(tracks)
+    total_score = good_tracks['major_weight'].sum()
 
     return total_score
 
@@ -181,33 +196,45 @@ def calc_score(pred_lbl, true_lbl):
     tracks = _analyze_tracks(truth, submission) 
     return score_event(tracks), efficiency_scores(tracks, nr_particles)
 
-def calculate_bined_scores(tracks, bin_ranges):
+def calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges):
     # Extract bin_params from the keys of bin_ranges
     bin_params = list(bin_ranges.keys())
 
     # Generate bin edges using numpy.arange
-    bins = {param: np.arange(bin_ranges[param]['min'], bin_ranges[param]['max'] + bin_ranges[param]['step'], bin_ranges[param]['step']) for param in bin_params}
+    # Create bins with -inf and inf for outer bins
+    bins = {
+        param: np.concatenate([[-np.inf], np.arange(bin_ranges[param]['min'], bin_ranges[param]['max'] + bin_ranges[param]['step'], bin_ranges[param]['step']), [np.inf]])
+        for param in bin_params
+    }
+    #bins = {param: np.arange(bin_ranges[param]['min'], bin_ranges[param]['max'] + bin_ranges[param]['step'], bin_ranges[param]['step']) for param in bin_params}
 
     # Initialize a dictionary to store bin scores for each parameter
     all_bin_scores = {}
 
     for param in bin_params:
         # Create bins for the parameter
-        tracks[f'{param}_bin'] = pd.cut(tracks[param], bins=bins[param])
+        predicted_tracks[f'{param}_bin'] = pd.cut(predicted_tracks[param], bins=bins[param], right=False)
+        true_tracks[f'{param}_bin'] = pd.cut(true_tracks[param], bins=bins[param], right=False)
+
+        good_tracks = get_good_tracks(predicted_tracks)
 
         # Group by the bins
-        grouped = tracks.groupby(f'{param}_bin', observed=False)
+        predicted_grouped = predicted_tracks.groupby(f'{param}_bin', observed=False)
+        true_grouped = true_tracks.groupby(f'{param}_bin', observed=False)
+        good_grouped = good_tracks.groupby(f'{param}_bin', observed=False)
 
         # Calculate the total major_weight for all tracks in each bin
-        total_major_weight = grouped['major_weight'].sum()
+        total_major_weight = predicted_grouped['major_weight'].sum()
+        total_true_weight = true_grouped['weight'].sum()
 
         # Calculate the total major_weight for tracks with 'good' set to 1 in each bin
-        good_major_weight = grouped.apply(lambda df: df[df['good'] == 1]['major_weight'].sum())
+        good_major_weight = good_grouped['major_weight'].sum()
 
         # Combine the results into a single DataFrame
         bin_scores = pd.DataFrame({
             'total_major_weight': total_major_weight,
-            'good_major_weight': good_major_weight
+            'good_major_weight': good_major_weight,
+            'total_true_weight': total_true_weight
         }).reset_index()
 
         # Store the bin scores in the dictionary
@@ -236,11 +263,22 @@ def calc_score_trackml(pred_lbl, true_lbl):
 
     nr_particles = len(truth['particle_id'].unique().tolist())
 
-    tracks = _analyze_tracks(truth, submission) 
+    tracks = _analyze_tracks(truth[['hit_id', 'particle_id', 'weight']], submission) 
     # Add additional columns to the tracks dataframe from particle info for analysis
+    total_weight = truth['weight'].sum()
+    truth['weight'] = truth['weight'] / total_weight
     
     event_score = score_event(tracks)
-    truth_unique = truth[['particle_id', 'theta', 'sin_phi', 'q', 'log_p']].drop_duplicates(subset='particle_id')
-    
-    tracks = tracks.merge(truth_unique[['particle_id', 'theta', 'sin_phi', 'q', 'log_p']], left_on='major_particle_id', right_on='particle_id', how='left')
-    return event_score, efficiency_scores(tracks, nr_particles), nr_particles, tracks
+
+    #truth_unique = truth[['particle_id', 'theta', 'sin_phi', 'q', 'log_p']].drop_duplicates(subset='particle_id')
+    true_tracks = truth.groupby('particle_id').agg({
+    'hit_id': 'count',
+    'theta': 'first',
+    'sin_phi': 'first',
+    'q': 'first',
+    'log_p': 'first',
+    'weight': 'sum'
+    }).reset_index()
+
+    tracks = tracks.merge(true_tracks[['particle_id', 'theta', 'sin_phi', 'q', 'log_p']], left_on='major_particle_id', right_on='particle_id', how='left')
+    return event_score, efficiency_scores(tracks, nr_particles), nr_particles, tracks, true_tracks

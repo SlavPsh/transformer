@@ -48,7 +48,7 @@ def load_model(config, device):
     model.eval()
     return model 
 
-def predict(model, test_loader, min_cl_size, min_samples, wandb_logger=None):
+def predict(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_logger=None):
     '''
     Evaluates the network on the test data. Returns the predictions and scores.
     '''
@@ -57,14 +57,6 @@ def predict(model, test_loader, min_cl_size, min_samples, wandb_logger=None):
     model.eval()
     predictions = {}
     score, perfects, doubles, lhcs = 0., 0., 0., 0.
-    # Define the min, max, and step for each parameter
-    # MOve this to the config file
-    bin_ranges = {
-        'log_p': {'min': -3, 'max': 5, 'step': 0.5},
-        'theta': {'min': 0, 'max': np.pi, 'step': np.pi/10},
-        'q': {'min': -2, 'max': 1, 'step': 1},
-        'sin_phi': {'min': -1, 'max': 1, 'step': 0.2}
-    }
 
     # Initialize a dictionary to store bin scores for all events
     combined_bin_scores = {param: [] for param in bin_ranges.keys()}
@@ -92,19 +84,26 @@ def predict(model, test_loader, min_cl_size, min_samples, wandb_logger=None):
 
         cluster_labels = clustering(pred, min_cl_size, min_samples)
 
-        event_score, scores, nr_particles, event_tracks = calc_score_trackml(cluster_labels[0], track_labels[0])
+        event_score, scores, nr_particles, predicted_tracks, true_tracks = calc_score_trackml(cluster_labels[0], track_labels[0])
 
         score += event_score
         perfects += scores[0]
         doubles += scores[1]
         lhcs += scores[2]
 
-        # ToDo : create bins on log_p , go through the bins and calculate maj_weight of each track that falls in the bin
-        # and maj_weight of each track that falls in the bin and has a 'good' set to 1
-        # Eventually move the bins to the config file
-        bin_scores = calculate_bined_scores(event_tracks, bin_ranges)
+        bin_scores = calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges)
         for param, scores in bin_scores.items():
             combined_bin_scores[param].append(scores)
+
+
+            # Calculate the summed weights per bin
+            total_major_weight_sum = scores['total_major_weight'].sum()
+            good_major_weight_sum = scores['good_major_weight'].sum()
+            total_true_weight_sum = scores['total_true_weight'].sum()
+
+            # Calculate the ratio of summed weights per bin
+            ratio = good_major_weight_sum / total_true_weight_sum if total_true_weight_sum != 0 else 0
+           
 
         if wandb_logger != None:
             metrics = {'test/event_id' : event_id[0],
@@ -186,7 +185,8 @@ def main(config_path):
 
     cl_size = 5
     min_sam = 4
-    preds, score, perfect, double_maj, lhc = predict(model, test_loader, cl_size, min_sam, wandb_logger)
+    bin_ranges = config['bin_ranges']
+    preds, score, perfect, double_maj, lhc = predict(model, test_loader, cl_size, min_sam, bin_ranges, wandb_logger)
     print(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}', flush=True)
     logging.info(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}')
     #print(perfect, double_maj, lhc, flush=True)
