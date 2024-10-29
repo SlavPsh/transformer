@@ -1,6 +1,7 @@
 import wandb
 import os
 import torch
+import matplotlib.pyplot as plt
 
 
 class WandbLogger:
@@ -96,4 +97,24 @@ class WandbLogger:
         if self.initialized:
             wandb.finish()
             self.initialized = False
+
+    def plot_binned_scores(self, aggregated_bin_scores, total_average_score):
+        # Plot the percentage of good_major_weight over total_major_weight per bin and log to wandb
+        for param, df in aggregated_bin_scores.items():
+            df['percentage_good_major_weight'] = (df['good_major_weight'] / df['total_true_weight']) * 100
+            plt.figure()
+            x = df[f'{param}_bin'].astype(str)
+            y = df['percentage_good_major_weight']
+            plt.plot(x, y, marker='o', color='black')
+            plt.fill_between(x, y, 0, where=(y >= 0), facecolor='blue', alpha=0.8)
+            plt.fill_between(x, y, 100, where=(y >= 0), facecolor='red', alpha=0.3)
+            plt.ylim(max(y.min() - 10, 0) , 100)  # Set y-axis range for better resolution
+            plt.title(f'Good Tracks Weight vs True Weight for {param}. Avg Score: {total_average_score*100:.1f}')
+            plt.xlabel(f'{param} Bins')
+            plt.ylabel('Percentage (%)')
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+
+            self.log({f'aggregated_bin_scores_{param}': wandb.Image(plt)})
+            plt.close()
 

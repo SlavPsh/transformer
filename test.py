@@ -43,7 +43,7 @@ def load_model(config, device):
         epoch = checkpoint['epoch'] + 1
         if 'att_mask_used' in checkpoint:
             model.set_use_att_mask(checkpoint['att_mask_used'])
-            logging.info(f'Using attention mask is set to  {checkpoint['att_mask_used']}')
+            logging.info(f'Using attention mask is set to {checkpoint['att_mask_used']}')
         else:
             model.set_use_att_mask(False)
             logging.info(f'Using attention mask is set to False')
@@ -55,7 +55,7 @@ def load_model(config, device):
     model.eval()
     return model 
 
-def predict(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_logger=None):
+def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_logger=None):
     '''
     Evaluates the network on the test data. Returns the predictions and scores.
     '''
@@ -81,12 +81,6 @@ def predict(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_logg
         pred = torch.unsqueeze(pred[~padding_mask], 0)
         track_params = torch.unsqueeze(track_params[~padding_mask], 0)
         track_labels = torch.unsqueeze(track_labels[~padding_mask], 0)
-
-        
-        # For evaluating the clustering performance on the (noisy) ground truth
-        # noise = np.random.laplace(0, 0.05, size=(track_params.shape[0], track_params.shape[1], track_params.shape[2]))
-        # track_params += noise
-        # cluster_labels = clustering(track_params, min_cl_size, min_samples)
 
 
         cluster_labels = clustering(pred, min_cl_size, min_samples)
@@ -122,24 +116,7 @@ def predict(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_logg
 
     total_average_score = score/len(test_loader)
 
-    # Plot the percentage of good_major_weight over total_major_weight per bin and log to wandb
-    for param, df in aggregated_bin_scores.items():
-        df['percentage_good_major_weight'] = (df['good_major_weight'] / df['total_true_weight']) * 100
-        plt.figure()
-        x = df[f'{param}_bin'].astype(str)
-        y = df['percentage_good_major_weight']
-        plt.plot(x, y, marker='o', color='black')
-        plt.fill_between(x, y, 0, where=(y >= 0), facecolor='blue', alpha=0.8)
-        plt.fill_between(x, y, 100, where=(y >= 0), facecolor='red', alpha=0.3)
-        plt.ylim(max(y.min() - 10, 0) , 100)  # Set y-axis range for better resolution
-        plt.title(f'Good Tracks Weight vs True Weight for {param}. Avg Score: {total_average_score*100:.1f}')
-        plt.xlabel(f'{param} Bins')
-        plt.ylabel('Percentage (%)')
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        if wandb_logger is not None:
-            wandb_logger.log({f'aggregated_bin_scores_{param}': wandb.Image(plt)})
-        plt.close()
+    wandb_logger.plot_binned_scores(aggregated_bin_scores, total_average_score)
 
     return predictions, total_average_score, perfects/len(test_loader), doubles/len(test_loader), lhcs/len(test_loader)
 
@@ -186,7 +163,7 @@ def main(config_path):
     cl_size = 5
     min_sam = 4
     bin_ranges = config['bin_ranges']
-    preds, score, perfect, double_maj, lhc = predict(model, test_loader, cl_size, min_sam, bin_ranges, wandb_logger)
+    preds, score, perfect, double_maj, lhc = test_main(model, test_loader, cl_size, min_sam, bin_ranges, wandb_logger)
     print(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}', flush=True)
     logging.info(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}')
     #print(perfect, double_maj, lhc, flush=True)
