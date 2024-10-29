@@ -131,7 +131,7 @@ def predict(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_logg
         plt.plot(x, y, marker='o', color='black')
         plt.fill_between(x, y, 0, where=(y >= 0), facecolor='blue', alpha=0.8)
         plt.fill_between(x, y, 100, where=(y >= 0), facecolor='red', alpha=0.3)
-        plt.ylim(85, 100)  # Set y-axis range for better resolution
+        plt.ylim(max(y.min() - 10, 0) , 100)  # Set y-axis range for better resolution
         plt.title(f'Good Tracks Weight vs True Weight for {param}. Avg Score: {total_average_score*100:.1f}')
         plt.xlabel(f'{param} Bins')
         plt.ylabel('Percentage (%)')
