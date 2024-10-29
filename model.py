@@ -169,6 +169,7 @@ def calc_efficiency_purity(distance_mask, input_for_mask, padding_mask):
     # Create an upper triangular mask, excluding the diagonal
     batch_size, seq_len, _ = mask_no_padding.shape
     upper_triangular_mask = torch.triu(torch.ones((seq_len, seq_len), dtype=torch.bool), diagonal=1)
+    upper_triangular_mask = upper_triangular_mask.to(mask_no_padding.device)
     upper_triangular_mask = upper_triangular_mask.unsqueeze(0).expand(batch_size, -1, -1)
     
     # Apply the upper triangular mask to count unique pairs
