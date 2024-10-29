@@ -183,6 +183,7 @@ def main(config_path):
 
     # Set up the model, optimizer, and loss function
     model, optimizer, loss_fn, start_epoch = setup_training(config, device)
+    model.attach_wandb_logger(wandb_logger)
 
     logging.info("Started training and validation")
     if 'watch_interval' in config['wandb']:
