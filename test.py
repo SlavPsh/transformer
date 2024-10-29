@@ -2,7 +2,7 @@ import torch
 from model import TransformerRegressor, clustering
 from data_processing.dataset import HitsDataset, get_dataloaders
 from data_processing.dataset import load_trackml_data, PAD_TOKEN
-from evaluation.scoring import calc_score_trackml, calculate_bined_scores
+from evaluation.scoring import calc_score_trackml, calculate_bined_scores, calc_edge_efficiency
 #from evaluation.plotting import plot_heatmap
 
 # Import supporting tools
@@ -63,7 +63,7 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_lo
     torch.set_grad_enabled(False)
     model.eval()
     predictions = {}
-    score, perfects, doubles, lhcs = 0., 0., 0., 0.
+    score, edge_efficiency, perfects, doubles, lhcs = 0., 0., 0., 0.
 
     # Initialize a dictionary to store bin scores for all events
     combined_bin_scores = {param: [] for param in bin_ranges.keys()}
@@ -87,8 +87,10 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_lo
         cluster_labels = clustering(pred, min_cl_size, min_samples)
 
         event_score, scores, nr_particles, predicted_tracks, true_tracks = calc_score_trackml(cluster_labels[0], track_labels[0])
+        event_edge_efficiency = calc_edge_efficiency(cluster_labels[0], track_labels[0])
 
         score += event_score
+        edge_efficiency += event_edge_efficiency
         perfects += scores[0]
         doubles += scores[1]
         lhcs += scores[2]
@@ -101,6 +103,7 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_lo
         if wandb_logger != None:
             metrics = {'test/event_id' : event_id[0],
                        'test/event score' : event_score, 
+                       'test/edge_efficiency' : event_edge_efficiency,
                        'test/num_hits_per_event' : len(hits[0]),
                        'test/num_particles_per_event' : nr_particles
                        }
@@ -116,6 +119,7 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_lo
         aggregated_bin_scores[param] = all_bin_scores_df.groupby(f'{param}_bin', observed=False).sum().reset_index()
 
     total_average_score = score/len(test_loader)
+    total_average_edge_efficiency = edge_efficiency/len(test_loader)
 
     wandb_logger.plot_binned_scores(aggregated_bin_scores, total_average_score)
 

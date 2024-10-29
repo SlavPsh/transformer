@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import torch
 
 
 # Following two functions are directly taken from the official TrackML github repository:
@@ -282,3 +283,43 @@ def calc_score_trackml(pred_lbl, true_lbl):
 
     tracks = tracks.merge(true_tracks[['particle_id', 'theta', 'sin_phi', 'q', 'log_p']], left_on='major_particle_id', right_on='particle_id', how='left')
     return event_score, efficiency_scores(tracks, nr_particles), nr_particles, tracks, true_tracks
+
+
+def calc_edge_efficiency(pred_lbl, true_lbl):
+    """
+    Function for calculating reconstucted edge efficiency
+    Input: pred_lbl: predicted track labels, true_lbl: true particle IDs
+    Output: edge_efficiency: reconstructed edge efficiency
+    """
+    truth_rows, pred_rows = [], []
+    for ind, part in enumerate(true_lbl):
+        truth_rows.append((ind, part[0].item(), part[1].item(), part[2].item(), part[3].item(), part[4].item(), part[5].item()))
+
+    for ind, pred in enumerate(pred_lbl):
+        pred_rows.append((ind, pred.item()))
+    
+    truth = pd.DataFrame(truth_rows)
+    truth.columns = ['hit_id', 'particle_id', 'weight', 'theta', 'sin_phi', 'q', 'log_p']
+    submission = pd.DataFrame(pred_rows)
+    submission.columns = ['hit_id', 'track_id']
+
+    # Create adjacency matrices for true and predicted edges
+    # True adjacency matrix
+    particle_ids = truth['particle_id'].values
+    true_adj = (particle_ids[:, None] == particle_ids[None, :]) & (particle_ids[:, None] != 0)
+
+    # Predicted adjacency matrix
+    track_ids = submission['track_id'].values
+    pred_adj = (track_ids[:, None] == track_ids[None, :]) & (track_ids[:, None] != 0)
+
+    # Calculate overlap between true and predicted edges (upper triangular part only)
+    upper_tri = torch.triu_indices(len(particle_ids), len(particle_ids), offset=1)
+    true_edges = true_adj[upper_tri[0], upper_tri[1]]
+    pred_edges = pred_adj[upper_tri[0], upper_tri[1]]
+    
+    # Count true and predicted edges
+    overlap_edges = (true_edges & pred_edges).sum()
+    true_edge_count = true_edges.sum()
+    edge_efficiency = overlap_edges / true_edge_count if true_edge_count > 0 else 0
+
+    return edge_efficiency
