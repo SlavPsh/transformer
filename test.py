@@ -79,6 +79,7 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_lo
 
         hits = torch.unsqueeze(hits[~padding_mask], 0)
         pred = torch.unsqueeze(pred[~padding_mask], 0)
+
         track_params = torch.unsqueeze(track_params[~padding_mask], 0)
         track_labels = torch.unsqueeze(track_labels[~padding_mask], 0)
 
@@ -157,6 +158,7 @@ def main(config_path):
     logging.info("Data loaded")
 
     model = load_model(config, device)  
+    model.attach_wandb_logger(wandb_logger)
 
     logging.info("Started evaluation")
 

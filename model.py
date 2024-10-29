@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from hdbscan import HDBSCAN
+from data_processing.dataset import PAD_TOKEN
 
 class TransformerRegressor(nn.Module):
     '''
@@ -9,7 +10,7 @@ class TransformerRegressor(nn.Module):
     Takes the hits (i.e 2D or 3D coordinates) and outputs the probability of each
     hit belonging to each of the 20 possible tracks (classes).
     '''
-    def __init__(self, num_encoder_layers, d_model, n_head, input_size, output_size, dim_feedforward, dropout, use_att_mask=False):
+    def __init__(self, num_encoder_layers, d_model, n_head, input_size, output_size, dim_feedforward, dropout, use_att_mask=False, wandb_logger=None):
         super(TransformerRegressor, self).__init__()
         self.input_layer = nn.Linear(input_size, d_model)
 
@@ -19,6 +20,12 @@ class TransformerRegressor(nn.Module):
         self.num_heads = n_head
         self.att_mask_used = use_att_mask
 
+        # Initialize the wandb logger
+        self.wandb_logger = wandb_logger
+        if self.wandb_logger is not None:
+            if self.wandb_logger.initialized == False:
+                self.wandb_logger.initialize()
+
     """
     def forward(self, input, padding_mask):
         x = self.input_layer(input)
@@ -26,7 +33,9 @@ class TransformerRegressor(nn.Module):
         out = self.decoder(memory)
         return out
     """
-
+    def attach_wandb_logger(self, wandb_logger):
+        self.wandb_logger = wandb_logger
+        
     def set_use_att_mask(self, use_att_mask):
         self.att_mask_used = use_att_mask
     
@@ -40,6 +49,14 @@ class TransformerRegressor(nn.Module):
             # Calculate the distance mask using the raw input
             distance_mask = self.calculate_distance_mask(input_for_mask)  # input used for mask calculation
             # Expand the mask for all heads without duplicating the data
+
+            # Calculate efficiency and purity
+            efficiency, purity = calc_efficiency_purity(distance_mask, input_for_mask, padding_mask)
+
+
+            # Log the mask efficiency and purity
+
+            self.wandb_logger.log({'Mask Efficiency': efficiency, 'Mask Purity': purity})
         
             # Save the mask and input for mask to file for debugging
             #if  self.save_to_file == True:
@@ -52,11 +69,12 @@ class TransformerRegressor(nn.Module):
             memory = self.encoder(src=x, src_key_padding_mask=padding_mask, mask=expanded_mask)
         else:
             memory = self.encoder(src=x, src_key_padding_mask=padding_mask)
-        
+        # Regularization of the output for stability of clustering algorithm
+        memory = torch.nan_to_num(memory, nan=0.0, posinf=1e6, neginf=-1e6)
         out = self.decoder(memory)
         return out
     
-    def calculate_distance_mask(self, input_for_mask, z_0_limit = 197.4, phi_r_ratio_limit = 0.001825, angular_separation_limit = 1.797):
+    def calculate_distance_mask(self, input_for_mask, z_0_limit = 197.4*10000, phi_r_ratio_limit = 0.001825*2, angular_separation_limit = 1.797):
         # Calculate the distance mask based on the input
 
         points = input_for_mask.detach()  # Shape: [batch_size, seq_len, num_features]
@@ -93,6 +111,8 @@ class TransformerRegressor(nn.Module):
             (z_0 < z_0_limit) & (phi_r_ratio < phi_r_ratio_limit) & (angular_separation < angular_separation_limit),
             True, False).to(torch.bool)
         
+
+
         """
         # For debugging
         # Calculate the number of True values
@@ -127,3 +147,40 @@ def clustering(pred_params, min_cl_size, min_samples):
 
     cluster_labels = [torch.from_numpy(cl_lbl).int() for cl_lbl in cluster_labels]
     return cluster_labels
+
+def calc_efficiency_purity(distance_mask, input_for_mask, padding_mask):
+    # Calculate the efficiency and purity of the distance mask
+    points = input_for_mask.detach()  # Shape: [batch_size, seq_len, num_features]
+    # Reshape points for broadcasting
+    point1 = points.unsqueeze(2)  # Shape: [batch_size, seq_len, 1, num_features]
+    point2 = points.unsqueeze(1)  # Shape: [batch_size, 1, seq_len, num_features]
+    
+    # Make padding 1 dimension extra on the number of points
+    padding_mask_expanded = padding_mask.unsqueeze(1) | padding_mask.unsqueeze(2)
+    particle_id1 = point1[..., 4]
+    particle_id2 = point2[..., 4]
+
+    # Remove padding from the distance mask
+    mask_no_padding = distance_mask & ~padding_mask_expanded
+    mask_true_edges = torch.where((particle_id1 == particle_id2) & (particle_id1 != 0), True, False).to(torch.bool)
+    # Remove padding from the true edges mask
+    mask_true_edges_no_padding = mask_true_edges & ~padding_mask_expanded
+
+    # Create an upper triangular mask, excluding the diagonal
+    batch_size, seq_len, _ = mask_no_padding.shape
+    upper_triangular_mask = torch.triu(torch.ones((seq_len, seq_len), dtype=torch.bool), diagonal=1)
+    upper_triangular_mask = upper_triangular_mask.unsqueeze(0).expand(batch_size, -1, -1)
+    
+    # Apply the upper triangular mask to count unique pairs
+    mask_no_padding = mask_no_padding & upper_triangular_mask
+    mask_true_edges_no_padding = mask_true_edges_no_padding & upper_triangular_mask
+
+    # Calculate the overlap between the distance mask and the true edges mask
+    overlap = (mask_no_padding & mask_true_edges_no_padding).sum().item()
+    attention_count = mask_no_padding.sum().item()
+    true_count = mask_true_edges_no_padding.sum().item()
+
+    efficiency = overlap / true_count
+    purity = overlap / attention_count
+
+    return efficiency, purity

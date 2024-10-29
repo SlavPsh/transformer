@@ -70,14 +70,14 @@ def load_trackml_data(data, normalize=False, chunking=False):
     
     def extract_hits_data_for_masking(event_rows):
         # Returns the hit coordinates as a padded sequence; this is the input to the transformer
-        event_hit_data = event_rows[["x", "y", "z"]].to_numpy(dtype=np.float32)
+        event_hit_data = event_rows[["x", "y", "z", "particle_id"]].to_numpy(dtype=np.float32)
         r_cyl = np.sqrt(event_hit_data[:,0]**2 + event_hit_data[:,1]**2)
         rho = np.sqrt(event_hit_data[:,0]**2 + event_hit_data[:,1]**2 + event_hit_data[:,2]**2)
         phi_cyl = np.arctan2(event_hit_data[:,1], event_hit_data[:,0])
         theta_coord = np.arccos(event_hit_data[:,2]/rho)
         eta_coord = -np.log(np.tan(theta_coord/2.))
         
-        hits_data_for_masking = np.column_stack([event_hit_data[:,2], r_cyl, phi_cyl, eta_coord])
+        hits_data_for_masking = np.column_stack([event_hit_data[:,2], r_cyl, phi_cyl, eta_coord, event_hit_data[:,3]])
         hits_data_for_masking_padded = np.pad(hits_data_for_masking, [(0, max_num_hits-len(event_rows)), (0, 0)], "constant", constant_values=PAD_TOKEN)
         return hits_data_for_masking_padded
 

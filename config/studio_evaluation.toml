@@ -12,8 +12,8 @@ data_file = "trackml_tiny_10to50tracks_100events.csv"
 
 
 [model]
-# checkpoint_path = "/data/atlas/users/spshenov/studio/trained_models/20241028_194927_great-spoonbill-of-refinement_train/model_best.pth"
-checkpoint_path = "/data/atlas/users/spshenov/trained_models/models_5_features_600epochs/model_trackml_10to50_best.pth"
+checkpoint_path = "/data/atlas/users/spshenov/trained_models/20241028_203934_bronze-reindeer-of-serenity_train/model_best.pth"
+# checkpoint_path = "/data/atlas/users/spshenov/trained_models/models_5_features_600epochs/model_trackml_10to50_best.pth"
 num_encoder_layers = 6
 d_model = 32
 n_head = 4
