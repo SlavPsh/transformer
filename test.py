@@ -63,7 +63,7 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_lo
     torch.set_grad_enabled(False)
     model.eval()
     predictions = {}
-    score, edge_efficiency, perfects, doubles, lhcs = 0., 0., 0., 0.
+    score, edge_efficiency, perfects, doubles, lhcs = 0., 0., 0., 0., 0.
 
     # Initialize a dictionary to store bin scores for all events
     combined_bin_scores = {param: [] for param in bin_ranges.keys()}
