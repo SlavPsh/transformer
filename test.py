@@ -69,7 +69,7 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_lo
     combined_bin_scores = {param: [] for param in bin_ranges.keys()}
 
     for data in test_loader:
-        # data is per event
+        # data is per event (becasue batch_size = 1)
         # Split the data for this event
         event_id, hits, hits_masking, track_params, track_labels = data
  
@@ -101,11 +101,11 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_lo
            
 
         if wandb_logger != None:
-            metrics = {'test/event_id' : event_id[0],
-                       'test/event score' : event_score, 
-                       'test/edge_efficiency' : event_edge_efficiency,
-                       'test/num_hits_per_event' : len(hits[0]),
-                       'test/num_particles_per_event' : nr_particles
+            metrics = {'batch/event_id[0]' : event_id[0],
+                       'batch/event score' : event_score, 
+                       'batch/edge_efficiency' : event_edge_efficiency,
+                       'batch/num_hits_per_event' : len(hits[0]),
+                       'batch/num_particles_per_event' : nr_particles
                        }
             wandb_logger.log(metrics)
 
@@ -123,7 +123,7 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_lo
 
     wandb_logger.plot_binned_scores(aggregated_bin_scores, total_average_score)
 
-    return predictions, total_average_score, perfects/len(test_loader), doubles/len(test_loader), lhcs/len(test_loader)
+    return predictions, total_average_score, total_average_edge_efficiency, perfects/len(test_loader), doubles/len(test_loader), lhcs/len(test_loader)
 
 def main(config_path):
         #Create unique run name
@@ -152,6 +152,7 @@ def main(config_path):
     logging.info(f'Loading data from {data_path} ...')
     hits_data, hits_masking, track_params_data, track_particle_data = load_trackml_data(data=data_path)
     dataset = HitsDataset(device, hits_data, hits_masking, track_params_data, track_particle_data)
+    # Test loader has batch size 1 in defintion
     _, _, test_loader = get_dataloaders(dataset,
                                         train_frac=0.7,
                                         valid_frac=0.15,
@@ -169,12 +170,12 @@ def main(config_path):
     cl_size = 5
     min_sam = 4
     bin_ranges = config['bin_ranges']
-    preds, score, perfect, double_maj, lhc = test_main(model, test_loader, cl_size, min_sam, bin_ranges, wandb_logger)
-    print(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}', flush=True)
-    logging.info(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}')
+    preds, score, edge_efficiency, perfect, double_maj, lhc = test_main(model, test_loader, cl_size, min_sam, bin_ranges, wandb_logger)
+    print(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}, Edge efficiency {edge_efficiency}', flush=True)
+    logging.info(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}, Edge efficiency {edge_efficiency}')
     #print(perfect, double_maj, lhc, flush=True)
 
-    wandb_logger.log({'test/cluster size' : cl_size, 'test/min sample size' : min_sam,'test/trackML score': score})
+    wandb_logger.log({'total/cluster size' : cl_size, 'total/min sample size' : min_sam,'total/trackML score': score, 'total/edge_efficiency': edge_efficiency})
 
     if cl_size == 5 and min_sam == 3:
         preds = list(preds.values())
