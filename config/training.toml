@@ -27,7 +27,7 @@ batch_size = 64
 total_epochs = 660
 shuffle = false # whether training data should be shuffled
 start_from_scratch = true
-default_lr = 4e-4
+default_lr = 1e-3
 
 [training.early_stopping]
 patience = 50
