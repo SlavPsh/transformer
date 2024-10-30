@@ -8,7 +8,8 @@ data_dir = "/data/atlas/users/spshenov/ml_input_data"
 # trackml_tiny_10to50tracks_100events.csv
 # trackml_short_10to50_tracks_5k_events.csv
 # trackml_10to50tracks_40kevents.csv
-data_file = "trackml_10to50tracks_40kevents.csv"
+# trackml_200to500tracks_40kevents.csv
+data_file = "trackml_200to500tracks_40kevents.csv"
 dataloader_num_workers = 4
 num_classes = 451
 

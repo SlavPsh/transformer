@@ -24,13 +24,13 @@ use_att_mask = true
 
 [training]
 batch_size = 64
-total_epochs = 600
+total_epochs = 660
 shuffle = false # whether training data should be shuffled
 start_from_scratch = true
-default_lr = 1e-3
+default_lr = 4e-4
 
 [training.early_stopping]
-patience = 30
+patience = 50
 
 [output]
 base_path = "/data/atlas/users/spshenov/trained_models"
