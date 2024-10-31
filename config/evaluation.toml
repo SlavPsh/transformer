@@ -9,14 +9,14 @@ data_dir = "/data/atlas/users/spshenov/ml_input_data"
 # trackml_short_10to50_tracks_5k_events.csv
 # trackml_10to50tracks_40kevents.csv
 # trackml_200to500tracks_40kevents.csv
-data_file = "trackml_200to500tracks_40kevents.csv"
+data_file = "trackml_10to50tracks_40kevents.csv"
 dataloader_num_workers = 4
 num_classes = 451
 
 
 [model]
-checkpoint_path = "/data/atlas/users/spshenov/trained_models/models_5_features_600epochs/model_trackml_10to50_best.pth"
-# checkpoint_path = "/data/atlas/users/spshenov/trained_models/20241029_211103_friendly-hallowed-chamois_train/model_best.pth"
+# checkpoint_path = "/data/atlas/users/spshenov/trained_models/models_5_features_600epochs/model_trackml_10to50_best.pth"
+checkpoint_path = "/data/atlas/users/spshenov/trained_models/20241030_223721_scrupulous-lionfish-of-chaos_train/model_best.pth"
 num_encoder_layers = 6
 d_model = 32
 n_head = 4
