@@ -48,8 +48,8 @@ def load_trackml_data(data, normalize=False, chunking=False):
             std = data[col].std()
             data[col] = (data[col] - mean)/std
 
-    # Shuffling the data and grouping by event ID
-    shuffled_data = data.sample(frac=1)
+    # Shuffling the data and grouping by event ID, add random state for reproducibility
+    shuffled_data = data.sample(frac=1, random_state=37)
     # Add extra colums to the data
     shuffled_data["p"] = np.sqrt(shuffled_data["px"]**2 + shuffled_data["py"]**2 + shuffled_data["pz"]**2)
     shuffled_data["log_p"] = np.log(shuffled_data["p"])
@@ -61,7 +61,8 @@ def load_trackml_data(data, normalize=False, chunking=False):
     shuffled_data["cos_phi"] = np.cos(shuffled_data["phi"])
     shuffled_data['eta'] = -np.log(np.tan(shuffled_data['theta']/2.))
     data_grouped_by_event = shuffled_data.groupby("event_id")
-    max_num_hits = data_grouped_by_event.size().max()
+    # max_num_hits = data_grouped_by_event.size().max()
+    max_num_hits = 1500
 
     def extract_hits_data(event_rows):
         # Returns the hit coordinates as a padded sequence; this is the input to the transformer

@@ -72,7 +72,7 @@ class TransformerRegressor(nn.Module):
         else:
             memory = self.encoder(src=x, src_key_padding_mask=padding_mask)
         # Regularization of the output for stability of clustering algorithm
-        memory = torch.nan_to_num(memory, nan=0.0, posinf=1e6, neginf=-1e6)
+        #memory = torch.nan_to_num(memory, nan=0.0, posinf=1e6, neginf=-1e6)
         out = self.decoder(memory)
         return out
     
