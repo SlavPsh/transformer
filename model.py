@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from hdbscan import HDBSCAN
-from data_processing.dataset import PAD_TOKEN
+import logging
 
 class TransformerRegressor(nn.Module):
     '''
@@ -65,6 +65,8 @@ class TransformerRegressor(nn.Module):
             #    self.save_to_file = False
         
             expanded_mask = distance_mask.unsqueeze(1).expand(batch_size, num_heads, seq_len, seq_len).reshape(batch_size * num_heads, seq_len, seq_len)
+            if not torch.all(expanded_mask):
+                logging.info("Mask is not all True")
             # Apply the distance mask to the attention mechanism
             memory = self.encoder(src=x, src_key_padding_mask=padding_mask, mask=expanded_mask)
         else:

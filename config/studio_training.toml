@@ -9,10 +9,6 @@ data_dir = "/data/atlas/users/spshenov/ml_input_data"
 # trackml_short_10to50_tracks_5k_events.csv
 # trackml_10to50tracks_40kevents.csv
 data_file = "trackml_tiny_10to50tracks_100events.csv"
-val_file = "sorted_val.pt"
-test_file = "sorted_test.pt"
-test_helperfile = "sorted_test_helper.pt"
-test_truthfile = "test_truths.csv"
 dataloader_num_workers = 4
 
 [model]
