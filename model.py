@@ -48,6 +48,13 @@ class TransformerRegressor(nn.Module):
             num_heads = self.num_heads
             # Calculate the distance mask using the raw input
             distance_mask = self.calculate_distance_mask(input_for_mask)  # input used for mask calculation
+            if torch.any(distance_mask):
+                logging.info("Some elements in the distance mask are True")
+                num_true = (distance_mask == True).sum().item()
+                logging.info(f"num true elem dist mask: {num_true}")
+            else: 
+                logging.info("Distance Mask is all False")
+                
             # Expand the mask for all heads without duplicating the data
 
             # Calculate efficiency and purity
@@ -65,18 +72,19 @@ class TransformerRegressor(nn.Module):
             #    self.save_to_file = False
         
             expanded_mask = distance_mask.unsqueeze(1).expand(batch_size, num_heads, seq_len, seq_len).reshape(batch_size * num_heads, seq_len, seq_len)
-            if not torch.all(expanded_mask):
-                logging.info("Mask is not all True")
+
             # Apply the distance mask to the attention mechanism
             memory = self.encoder(src=x, src_key_padding_mask=padding_mask, mask=expanded_mask)
         else:
             memory = self.encoder(src=x, src_key_padding_mask=padding_mask)
         # Regularization of the output for stability of clustering algorithm
         #memory = torch.nan_to_num(memory, nan=0.0, posinf=1e6, neginf=-1e6)
+        if torch.isnan(memory).any(): 
+            logging.error("Memory contains NaN values")
         out = self.decoder(memory)
         return out
     
-    def calculate_distance_mask(self, input_for_mask, z_0_limit = 197.4*1e6, phi_r_ratio_limit = 0.001825*1e6, angular_separation_limit = 1.797*1e6):
+    def calculate_distance_mask(self, input_for_mask, z_0_limit = 197.4*0.001, phi_r_ratio_limit = 0.001825*0.001, angular_separation_limit = 1.797*0.001):
         # Calculate the distance mask based on the input
 
         points = input_for_mask.detach()  # Shape: [batch_size, seq_len, num_features]
@@ -110,10 +118,27 @@ class TransformerRegressor(nn.Module):
 
         # Create mask based on metric limits
         mask = torch.where(
-            (z_0 < z_0_limit) & (phi_r_ratio < phi_r_ratio_limit) & (angular_separation < angular_separation_limit),
+            (z_0 > z_0_limit) & (phi_r_ratio > phi_r_ratio_limit) & (angular_separation > angular_separation_limit),
             True, False).to(torch.bool)
         
+        # Set the diagonal of the mask to False (no masking for self-attention)
+        batch_size, seq_len, _ = mask.shape
+        mask[..., range(seq_len), range(seq_len)] = False  # Efficiently set diagonal to False (no masking for self-attention)
 
+        # Step 1: Create a mask of the same shape, initialized with all False
+        mask1 = torch.zeros_like(mask, dtype=torch.bool)
+
+        # Step 1: Randomly select a column (and row, by symmetry)
+        random_index = torch.randint(0, seq_len, (1,)).item()
+
+        # Step 2: Set the chosen column and row to True for each batch
+        mask1[:, :, random_index] = True  # Set the chosen column to True
+        mask1[:, random_index, :] = True  # Set the symmetric row to True
+
+        # Step 3: Keep all diagonal elements as False
+        # This sets diagonal to False for each batch
+        for i in range(seq_len):
+            mask1[:, i, i] = False
 
         """
         # For debugging
@@ -133,7 +158,7 @@ class TransformerRegressor(nn.Module):
         """
 
 
-        return mask  # Shape: [batch_size, seq_len, seq_len]
+        return mask1  # Shape: [batch_size, seq_len, seq_len]
     
 def clustering(pred_params, min_cl_size, min_samples):
     '''
@@ -163,7 +188,7 @@ def calc_efficiency_purity(distance_mask, input_for_mask, padding_mask):
     particle_id2 = point2[..., 4]
 
     # Remove padding from the distance mask
-    mask_no_padding = distance_mask & ~padding_mask_expanded
+    mask_no_padding = ~distance_mask & ~padding_mask_expanded
     mask_true_edges = torch.where((particle_id1 == particle_id2) & (particle_id1 != 0), True, False).to(torch.bool)
     # Remove padding from the true edges mask
     mask_true_edges_no_padding = mask_true_edges & ~padding_mask_expanded
@@ -183,7 +208,9 @@ def calc_efficiency_purity(distance_mask, input_for_mask, padding_mask):
     attention_count = mask_no_padding.sum().item()
     true_count = mask_true_edges_no_padding.sum().item()
 
-    efficiency = overlap / true_count
-    purity = overlap / attention_count
+    # Calculate the efficiency and purity, with a small epsilon to avoid division by zero
+    epsilon = 1e-8
+    efficiency = overlap / (true_count + epsilon)
+    purity = overlap / (attention_count + epsilon)
 
     return efficiency, purity

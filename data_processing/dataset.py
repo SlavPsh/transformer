@@ -84,7 +84,7 @@ def load_trackml_data(data, normalize=False, chunking=False):
 
     def extract_track_params_data(event_rows):
         # Returns the track parameters as a padded sequence; this is what the transformer must regress
-        event_track_params_data = event_rows[["theta","sin_phi","cos_phi", "q", "log_p"]].to_numpy(dtype=np.float32)
+        event_track_params_data = event_rows[["theta","sin_phi","cos_phi", "q", "log_pt"]].to_numpy(dtype=np.float32)
 
         theta = event_track_params_data[:,0]
         sin_phi = event_track_params_data[:,1]
