@@ -47,7 +47,7 @@ class TransformerRegressor(nn.Module):
             batch_size, seq_len, _ = x.size()
             num_heads = self.num_heads
             # Calculate the distance mask using the raw input
-            distance_mask = self.calculate_distance_mask(input_for_mask)  # input used for mask calculation
+            distance_mask = self.calculate_distance_mask(input_for_mask, padding_mask)  # input used for mask calculation
             if torch.any(distance_mask):
                 logging.info("Some elements in the distance mask are True")
                 num_true = (distance_mask == True).sum().item()
@@ -70,9 +70,27 @@ class TransformerRegressor(nn.Module):
             #    torch.save(distance_mask, '/data/atlas/users/spshenov/temp/distance_mask.pt')
             #    torch.save(input_coord, '/data/atlas/users/spshenov/temp/input_coord.pt')
             #    self.save_to_file = False
-        
+            
             expanded_mask = distance_mask.unsqueeze(1).expand(batch_size, num_heads, seq_len, seq_len).reshape(batch_size * num_heads, seq_len, seq_len)
+            """
+            # Invert the padding mask for combining (so True means accessible)
+            inverted_padding_mask = ~padding_mask  # Shape: [batch_size, seq_len]
+            # Expand the padding mask to [batch_size, num_heads, seq_len, seq_len]
+            expanded_padding_mask = inverted_padding_mask.unsqueeze(1).unsqueeze(-1) & inverted_padding_mask.unsqueeze(1).unsqueeze(2)
+            expanded_padding_mask = expanded_padding_mask.expand(batch_size, num_heads, seq_len, seq_len)
 
+            # Reshape expanded_padding_mask to [batch_size * num_heads, seq_len, seq_len]
+            expanded_padding_mask = expanded_padding_mask.reshape(batch_size * num_heads, seq_len, seq_len)
+
+            # Combine the attention mask and expanded padding mask with an AND operation
+            combined_mask = ~expanded_mask & expanded_padding_mask  # Final combined mask, where True means accessible
+
+            # Check if each position has at least one accessible token
+            if (combined_mask.sum(dim=-1) == 0).any():
+                print("Warning: Some tokens have no valid positions to attend to!")
+            else:
+                print("All tokens have at least one valid position to attend to.")
+            """
             # Apply the distance mask to the attention mechanism
             memory = self.encoder(src=x, src_key_padding_mask=padding_mask, mask=expanded_mask)
         else:
@@ -84,7 +102,7 @@ class TransformerRegressor(nn.Module):
         out = self.decoder(memory)
         return out
     
-    def calculate_distance_mask(self, input_for_mask, z_0_limit = 197.4*0.001, phi_r_ratio_limit = 0.001825*0.001, angular_separation_limit = 1.797*0.001):
+    def calculate_distance_mask(self, input_for_mask, padding_mask, z_0_limit = 197.4*0.001, phi_r_ratio_limit = 0.001825*0.001, angular_separation_limit = 1.797*0.001):
         # Calculate the distance mask based on the input
 
         points = input_for_mask.detach()  # Shape: [batch_size, seq_len, num_features]
@@ -94,20 +112,23 @@ class TransformerRegressor(nn.Module):
         point1 = points.unsqueeze(2)  # Shape: [batch_size, seq_len, 1, num_features]
         point2 = points.unsqueeze(1)  # Shape: [batch_size, 1, seq_len, num_features]
 
+        # Expand the padding mask to both sequence dimensions
+        expanded_padding_mask = padding_mask.unsqueeze(1) | padding_mask.unsqueeze(2)  # Shape: [batch_size, seq_len, seq_len]
+        # Generate a diagonal mask to avoid calculating self-pair distances
+        # Create combined mask by setting diagonal elements to True 
+        combined_mask = expanded_padding_mask.clone()
+        combined_mask.diagonal(dim1=-2, dim2=-1).fill_(True)  # set diagonal to True for each batch
+
         # Extract required coordinates for metric computations 
-        z1 = point1[..., 0]
-        z2 = point2[..., 0]
-        r1 = point1[..., 1]
-        r2 = point2[..., 1]
-        phi1 = point1[..., 2]
-        phi2 = point2[..., 2]
-        eta1 = point1[..., 3]
-        eta2 = point2[..., 3]
+        z1, z2 = point1[..., 0], point2[..., 0]
+        r1, r2 = point1[..., 1], point2[..., 1]
+        phi1, phi2 = point1[..., 2], point2[..., 2]
+        eta1, eta2 = point1[..., 3], point2[..., 3]
 
         # Compute the metrics from coordinates
         r_diff = r2 - r1
         z_0 = torch.where(
-        r_diff != 0,  # check for 0 in denominator
+        (r_diff != 0),  # check for 0 in denominator
         torch.abs(z1 - r1 * (z2 - z1) / r_diff),  # Normal calculation
         torch.full_like(r_diff, 1e6)  # Assign a very large value when denominator is 0
         )
@@ -117,28 +138,9 @@ class TransformerRegressor(nn.Module):
         angular_separation = torch.sqrt((eta2 - eta1) ** 2 + phi_diff ** 2)
 
         # Create mask based on metric limits
-        mask = torch.where(
+        mask = torch.where( ~combined_mask & 
             (z_0 > z_0_limit) & (phi_r_ratio > phi_r_ratio_limit) & (angular_separation > angular_separation_limit),
             True, False).to(torch.bool)
-        
-        # Set the diagonal of the mask to False (no masking for self-attention)
-        batch_size, seq_len, _ = mask.shape
-        mask[..., range(seq_len), range(seq_len)] = False  # Efficiently set diagonal to False (no masking for self-attention)
-
-        # Step 1: Create a mask of the same shape, initialized with all False
-        mask1 = torch.zeros_like(mask, dtype=torch.bool)
-
-        # Step 1: Randomly select a column (and row, by symmetry)
-        random_index = torch.randint(0, seq_len, (1,)).item()
-
-        # Step 2: Set the chosen column and row to True for each batch
-        mask1[:, :, random_index] = True  # Set the chosen column to True
-        mask1[:, random_index, :] = True  # Set the symmetric row to True
-
-        # Step 3: Keep all diagonal elements as False
-        # This sets diagonal to False for each batch
-        for i in range(seq_len):
-            mask1[:, i, i] = False
 
         """
         # For debugging
@@ -158,7 +160,7 @@ class TransformerRegressor(nn.Module):
         """
 
 
-        return mask1  # Shape: [batch_size, seq_len, seq_len]
+        return mask  # Shape: [batch_size, seq_len, seq_len]
     
 def clustering(pred_params, min_cl_size, min_samples):
     '''

@@ -8,17 +8,17 @@ data_dir = "/data/atlas/users/spshenov/ml_input_data"
 # trackml_tiny_10to50tracks_100events.csv
 # trackml_short_10to50_tracks_5k_events.csv
 # trackml_10to50tracks_40kevents.csv
-data_file = "trackml_tiny_10to50tracks_100events.csv"
+data_file = "trackml_10to50tracks_40kevents.csv"
 
 
 [model]
-checkpoint_path = "/data/atlas/users/spshenov/trained_models/20241028_203934_bronze-reindeer-of-serenity_train/model_best.pth"
+checkpoint_path = "/data/atlas/users/spshenov/trained_models/models427epochs/model_trackml_10to50_best"
 # checkpoint_path = "/data/atlas/users/spshenov/trained_models/models_5_features_600epochs/model_trackml_10to50_best.pth"
 num_encoder_layers = 6
 d_model = 32
 n_head = 4
 input_size = 3
-output_size = 5
+output_size = 4
 dim_feedforward = 128
 dropout = 0.1
 use_flash_attention = false
