@@ -101,9 +101,43 @@ class WandbLogger:
     def plot_binned_scores(self, aggregated_bin_scores, total_average_score):
         # Plot the percentage of good_major_weight over total_major_weight per bin and log to wandb
         for param, df in aggregated_bin_scores.items():
+            df['track_efficiency'] = (df['good_predicted_count'] / df['total_true_count']) * 100
+            df['track_fake_rate'] = ((df['total_predicted_count'] - df['good_predicted_count']) / df['total_predicted_count']) * 100
             df['percentage_good_major_weight'] = (df['good_major_weight'] / df['total_true_weight']) * 100
-            plt.figure()
+            
             x = df[f'{param}_bin'].astype(str)
+            # Plot track_efficiency
+            plt.figure()
+            y = df['track_efficiency']
+            plt.plot(x, y, marker='o', color='black')
+            plt.fill_between(x, y, 0, where=(y >= 0), facecolor='blue', alpha=0.8)
+            plt.fill_between(x, y, 100, where=(y >= 0), facecolor='red', alpha=0.3)
+            plt.ylim(max(y.min() - 10, 0), 100)
+            plt.title(f'Track Efficiency for {param}')
+            plt.xlabel(f'{param} Bins')
+            plt.ylabel('Efficiency (%)')
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            self.log({f'{param}_track_efficiency': wandb.Image(plt)})
+            plt.close()
+
+            # Plot track_fake_rate
+            plt.figure()
+            y = df['track_fake_rate']
+            plt.plot(x, y, marker='o', color='black')
+            plt.fill_between(x, y, 0, where=(y >= 0), facecolor='red', alpha=0.8)
+            plt.fill_between(x, y, 100, where=(y >= 0), facecolor='green', alpha=0.3)
+            plt.ylim(max(y.min() - 10, 0), 100)
+            plt.title(f'Track Fake Rate for {param}')
+            plt.xlabel(f'{param} Bins')
+            plt.ylabel('Fake Rate (%)')
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            self.log({f'{param}_track_fake_rate': wandb.Image(plt)})
+            plt.close()
+            
+            # Plot percentage_good_major_weight
+            plt.figure()
             y = df['percentage_good_major_weight']
             plt.plot(x, y, marker='o', color='black')
             plt.fill_between(x, y, 0, where=(y >= 0), facecolor='blue', alpha=0.8)

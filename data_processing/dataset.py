@@ -96,7 +96,7 @@ def load_trackml_data(data, normalize=False, chunking=False):
 
     def extract_particle_data(event_rows):
         # Returns the particle information as a padded sequence; this is used for weighting in the calculation of trackML score
-        event_hit_classes_data = event_rows[["particle_id","weight", "theta", "sin_phi", "q", "log_p"]].to_numpy(dtype=np.float32)
+        event_hit_classes_data = event_rows[["particle_id","weight", "theta", "sin_phi", "q", "pt", "eta"]].to_numpy(dtype=np.float32)
         return np.pad(event_hit_classes_data, [(0, max_num_hits-len(event_rows)), (0, 0)], "constant", constant_values=PAD_TOKEN)
 
     # Get the hits, track params and their weights as sequences padded up to a max length

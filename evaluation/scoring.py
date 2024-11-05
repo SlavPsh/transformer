@@ -231,11 +231,23 @@ def calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges):
         # Calculate the total major_weight for tracks with 'good' set to 1 in each bin
         good_major_weight = good_grouped['major_weight'].sum()
 
+        # Calculate the total count of major tracks in predicted_grouped
+        total_predicted_count = predicted_grouped.size()
+
+        # Calculate the total count of true tracks in true_grouped
+        total_true_count = true_grouped.size()
+
+        # Calculate the count of 'good' tracks in each bin
+        good_predicted_count = good_grouped.size()
+
         # Combine the results into a single DataFrame
         bin_scores = pd.DataFrame({
             'total_major_weight': total_major_weight,
             'good_major_weight': good_major_weight,
-            'total_true_weight': total_true_weight
+            'total_true_weight': total_true_weight,
+            'total_predicted_count': total_predicted_count,
+            'good_predicted_count': good_predicted_count,
+            'total_true_count': total_true_count
         }).reset_index()
 
         # Store the bin scores in the dictionary
@@ -252,13 +264,13 @@ def calc_score_trackml(pred_lbl, true_lbl):
     """
     truth_rows, pred_rows = [], []
     for ind, part in enumerate(true_lbl):
-        truth_rows.append((ind, part[0].item(), part[1].item(), part[2].item(), part[3].item(), part[4].item(), part[5].item()))
+        truth_rows.append((ind, part[0].item(), part[1].item(), part[2].item(), part[3].item(), part[4].item(), part[5].item(), part[6].item()))
 
     for ind, pred in enumerate(pred_lbl):
         pred_rows.append((ind, pred.item()))
     
     truth = pd.DataFrame(truth_rows)
-    truth.columns = ['hit_id', 'particle_id', 'weight', 'theta', 'sin_phi', 'q', 'log_p']
+    truth.columns = ['hit_id', 'particle_id', 'weight', 'theta', 'sin_phi', 'q', 'pt', 'eta']
     submission = pd.DataFrame(pred_rows)
     submission.columns = ['hit_id', 'track_id']
 
@@ -277,11 +289,12 @@ def calc_score_trackml(pred_lbl, true_lbl):
     'theta': 'first',
     'sin_phi': 'first',
     'q': 'first',
-    'log_p': 'first',
+    'pt': 'first',
+    'eta': 'first',
     'weight': 'sum'
     }).reset_index()
 
-    tracks = tracks.merge(true_tracks[['particle_id', 'theta', 'sin_phi', 'q', 'log_p']], left_on='major_particle_id', right_on='particle_id', how='left')
+    tracks = tracks.merge(true_tracks[['particle_id', 'theta', 'sin_phi', 'q', 'pt', 'eta']], left_on='major_particle_id', right_on='particle_id', how='left')
     return event_score, efficiency_scores(tracks, nr_particles), nr_particles, tracks, true_tracks
 
 
