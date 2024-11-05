@@ -178,8 +178,7 @@ def main(config_path):
                                                               valid_frac=0.15,
                                                               test_frac=0.15,
                                                               batch_size=64)
-    print(strftime("%Y-%m-%d %H:%M:%S", gmtime()))
-    print("Data loaded")
+    logging.info(f'Data loaded.')
 
     # Set up the model, optimizer, and loss function
     model, optimizer, loss_fn, start_epoch = setup_training(config, device)

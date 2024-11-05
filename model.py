@@ -77,7 +77,7 @@ class TransformerRegressor(nn.Module):
         out = self.decoder(memory)
         return out
     
-    def calculate_distance_mask(self, input_for_mask, padding_mask, z_0_limit = 197.4*0.001, phi_r_ratio_limit = 0.001825*0.001, angular_separation_limit = 1.797*0.001):
+    def calculate_distance_mask(self, input_for_mask, padding_mask, z_0_limit = 197.4, phi_r_ratio_limit = 0.001825, angular_separation_limit = 1.797):
         # Calculate the distance mask based on the input
 
         points = input_for_mask.detach()  # Shape: [batch_size, seq_len, num_features]

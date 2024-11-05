@@ -61,8 +61,9 @@ def load_trackml_data(data, normalize=False, chunking=False):
     shuffled_data["cos_phi"] = np.cos(shuffled_data["phi"])
     shuffled_data['eta'] = -np.log(np.tan(shuffled_data['theta']/2.))
     data_grouped_by_event = shuffled_data.groupby("event_id")
-    # max_num_hits = data_grouped_by_event.size().max()
-    max_num_hits = 1500
+    max_num_hits_data = data_grouped_by_event.size().max()
+    print(f"Max number of hits in an event: {max_num_hits_data}")
+    max_num_hits = 700
 
     def extract_hits_data(event_rows):
         # Returns the hit coordinates as a padded sequence; this is the input to the transformer
@@ -84,14 +85,14 @@ def load_trackml_data(data, normalize=False, chunking=False):
 
     def extract_track_params_data(event_rows):
         # Returns the track parameters as a padded sequence; this is what the transformer must regress
-        event_track_params_data = event_rows[["theta","sin_phi","cos_phi", "q", 'log_pt']].to_numpy(dtype=np.float32)
+        event_track_params_data = event_rows[["theta","sin_phi","cos_phi", "q"]].to_numpy(dtype=np.float32)
 
         theta = event_track_params_data[:,0]
         sin_phi = event_track_params_data[:,1]
         cos_phi = event_track_params_data[:,2]
         q = event_track_params_data[:,3]
-        log_pt = event_track_params_data[:,4]
-        processed_event_track_params_data = np.column_stack([theta, sin_phi, cos_phi, q, log_pt])
+        # log_pt = event_track_params_data[:,4]
+        processed_event_track_params_data = np.column_stack([theta, sin_phi, cos_phi, q])
         return np.pad(processed_event_track_params_data, [(0, max_num_hits-len(event_rows)), (0, 0)], "constant", constant_values=PAD_TOKEN)
 
     def extract_particle_data(event_rows):
