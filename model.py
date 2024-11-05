@@ -89,10 +89,12 @@ class TransformerRegressor(nn.Module):
 
         # Expand the padding mask to both sequence dimensions
         expanded_padding_mask = padding_mask.unsqueeze(1) | padding_mask.unsqueeze(2)  # Shape: [batch_size, seq_len, seq_len]
-      
-        # Create combined mask by setting diagonal elements to True 
-        combined_mask = expanded_padding_mask.clone()
-        combined_mask.diagonal(dim1=-2, dim2=-1).fill_(True)  # set diagonal to True for each batch
+        expanded_padding_mask.diagonal(dim1=-2, dim2=-1).fill_(True)  # Set diagonal elements to True in order to keep attention to itself
+
+        # Avoid computing metrics for padding and diagonal elements by setting combined_mask
+        non_padding_mask = ~expanded_padding_mask
+        large_value = torch.full((1,), 1e6, device=points.device)
+
 
         # Extract required coordinates for metric computations 
         z1, z2 = point1[..., 0], point2[..., 0]
@@ -100,22 +102,27 @@ class TransformerRegressor(nn.Module):
         phi1, phi2 = point1[..., 2], point2[..., 2]
         eta1, eta2 = point1[..., 3], point2[..., 3]
 
-        # Compute the metrics from coordinates
-        r_diff = r2 - r1
+        # Compute r_diff, avoiding division by zero for non-relevant pairs
+        r_diff = torch.where(non_padding_mask, r2 - r1, large_value)
         z_0 = torch.where(
-        (r_diff != 0),  # check for 0 in denominator
-        torch.abs(z1 - r1 * (z2 - z1) / r_diff),  # Normal calculation
-        torch.full_like(r_diff, 1e6)  # Assign a very large value when denominator is 0
+            (r_diff != 0) & non_padding_mask,
+            torch.abs(z1 - r1 * (z2 - z1) / r_diff),
+            large_value
         )
-        phi_diff = torch.abs(phi2 - phi1)
-        phi_diff = torch.where(phi_diff > np.pi, 2 * np.pi - phi_diff, phi_diff)
-        phi_r_ratio = phi_diff / (torch.abs(r2 - r1) + 1e-8)
-        angular_separation = torch.sqrt((eta2 - eta1) ** 2 + phi_diff ** 2)
 
-        # Create mask based on metric limits
-        mask = torch.where( ~combined_mask & 
-            (z_0 > z_0_limit) & (phi_r_ratio > phi_r_ratio_limit) & (angular_separation > angular_separation_limit),
-            True, False).to(torch.bool)
+        # Compute phi_diff and apply adjustments for values > π
+        phi_diff = torch.where(non_padding_mask, torch.abs(phi2 - phi1), large_value)
+        phi_diff = torch.where((phi_diff > np.pi) & non_padding_mask, 2 * np.pi - phi_diff, phi_diff)
+        
+        # Calculate phi_r_ratio and angular_separation only for non-padding pairs
+        phi_r_ratio = torch.where(non_padding_mask, phi_diff / (torch.abs(r_diff) + 1e-8), large_value)
+        angular_separation = torch.where(non_padding_mask, torch.sqrt((eta2 - eta1) ** 2 + phi_diff ** 2), large_value)
+
+        # Create the mask based on metric limits
+        mask = (non_padding_mask & 
+                (z_0 > z_0_limit) & 
+                (phi_r_ratio > phi_r_ratio_limit) & 
+                (angular_separation > angular_separation_limit))
 
         """
         # For debugging
