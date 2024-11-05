@@ -48,12 +48,6 @@ class TransformerRegressor(nn.Module):
             num_heads = self.num_heads
             # Calculate the distance mask using the raw input
             distance_mask = self.calculate_distance_mask(input_for_mask, padding_mask)  # input used for mask calculation
-            if torch.any(distance_mask):
-                logging.info("Some elements in the distance mask are True")
-                num_true = (distance_mask == True).sum().item()
-                logging.info(f"num true elem dist mask: {num_true}")
-            else: 
-                logging.info("Distance Mask is all False")
                 
             # Expand the mask for all heads without duplicating the data
 
@@ -72,33 +66,14 @@ class TransformerRegressor(nn.Module):
             #    self.save_to_file = False
             
             expanded_mask = distance_mask.unsqueeze(1).expand(batch_size, num_heads, seq_len, seq_len).reshape(batch_size * num_heads, seq_len, seq_len)
-            """
-            # Invert the padding mask for combining (so True means accessible)
-            inverted_padding_mask = ~padding_mask  # Shape: [batch_size, seq_len]
-            # Expand the padding mask to [batch_size, num_heads, seq_len, seq_len]
-            expanded_padding_mask = inverted_padding_mask.unsqueeze(1).unsqueeze(-1) & inverted_padding_mask.unsqueeze(1).unsqueeze(2)
-            expanded_padding_mask = expanded_padding_mask.expand(batch_size, num_heads, seq_len, seq_len)
 
-            # Reshape expanded_padding_mask to [batch_size * num_heads, seq_len, seq_len]
-            expanded_padding_mask = expanded_padding_mask.reshape(batch_size * num_heads, seq_len, seq_len)
-
-            # Combine the attention mask and expanded padding mask with an AND operation
-            combined_mask = ~expanded_mask & expanded_padding_mask  # Final combined mask, where True means accessible
-
-            # Check if each position has at least one accessible token
-            if (combined_mask.sum(dim=-1) == 0).any():
-                print("Warning: Some tokens have no valid positions to attend to!")
-            else:
-                print("All tokens have at least one valid position to attend to.")
-            """
             # Apply the distance mask to the attention mechanism
             memory = self.encoder(src=x, src_key_padding_mask=padding_mask, mask=expanded_mask)
         else:
             memory = self.encoder(src=x, src_key_padding_mask=padding_mask)
         # Regularization of the output for stability of clustering algorithm
-        #memory = torch.nan_to_num(memory, nan=0.0, posinf=1e6, neginf=-1e6)
         if torch.isnan(memory).any(): 
-            logging.error("Memory contains NaN values")
+            logging.error("Memory contains NaN values. Check attention mask.")
         out = self.decoder(memory)
         return out
     
@@ -114,7 +89,7 @@ class TransformerRegressor(nn.Module):
 
         # Expand the padding mask to both sequence dimensions
         expanded_padding_mask = padding_mask.unsqueeze(1) | padding_mask.unsqueeze(2)  # Shape: [batch_size, seq_len, seq_len]
-        # Generate a diagonal mask to avoid calculating self-pair distances
+      
         # Create combined mask by setting diagonal elements to True 
         combined_mask = expanded_padding_mask.clone()
         combined_mask.diagonal(dim1=-2, dim2=-1).fill_(True)  # set diagonal to True for each batch

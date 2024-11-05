@@ -84,14 +84,14 @@ def load_trackml_data(data, normalize=False, chunking=False):
 
     def extract_track_params_data(event_rows):
         # Returns the track parameters as a padded sequence; this is what the transformer must regress
-        event_track_params_data = event_rows[["theta","sin_phi","cos_phi", "q"]].to_numpy(dtype=np.float32)
+        event_track_params_data = event_rows[["theta","sin_phi","cos_phi", "q", 'log_pt']].to_numpy(dtype=np.float32)
 
         theta = event_track_params_data[:,0]
         sin_phi = event_track_params_data[:,1]
         cos_phi = event_track_params_data[:,2]
         q = event_track_params_data[:,3]
-        #log_p = event_track_params_data[:,4]
-        processed_event_track_params_data = np.column_stack([theta, sin_phi, cos_phi, q])
+        log_pt = event_track_params_data[:,4]
+        processed_event_track_params_data = np.column_stack([theta, sin_phi, cos_phi, q, log_pt])
         return np.pad(processed_event_track_params_data, [(0, max_num_hits-len(event_rows)), (0, 0)], "constant", constant_values=PAD_TOKEN)
 
     def extract_particle_data(event_rows):

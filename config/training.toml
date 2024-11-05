@@ -27,10 +27,10 @@ batch_size = 64
 total_epochs = 660
 shuffle = false # whether training data should be shuffled
 start_from_scratch = true
-default_lr = 1e-3
+default_lr = 4e-4
 
 [training.early_stopping]
-patience = 50
+patience = 60
 
 [output]
 base_path = "/data/atlas/users/spshenov/trained_models"

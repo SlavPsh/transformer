@@ -127,7 +127,7 @@ class WandbLogger:
             plt.plot(x, y, marker='o', color='black')
             plt.fill_between(x, y, 0, where=(y >= 0), facecolor='red', alpha=0.8)
             plt.fill_between(x, y, 100, where=(y >= 0), facecolor='green', alpha=0.3)
-            plt.ylim(max(y.min() - 10, 0), 100)
+            plt.ylim(max(y.min() - 10, 0), min(y.max() + 20, 100))
             plt.title(f'Track Fake Rate for {param}')
             plt.xlabel(f'{param} Bins')
             plt.ylabel('Fake Rate (%)')
