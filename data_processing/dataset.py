@@ -62,7 +62,6 @@ def load_trackml_data(data, normalize=False, chunking=False):
     shuffled_data['eta'] = -np.log(np.tan(shuffled_data['theta']/2.))
     data_grouped_by_event = shuffled_data.groupby("event_id")
     max_num_hits_data = data_grouped_by_event.size().max()
-    print(f"Max number of hits in an event: {max_num_hits_data}")
     max_num_hits = 700
 
     def extract_hits_data(event_rows):

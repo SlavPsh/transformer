@@ -2,6 +2,7 @@ import wandb
 import os
 import torch
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 class WandbLogger:
@@ -101,7 +102,15 @@ class WandbLogger:
     def plot_binned_scores(self, aggregated_bin_scores, total_average_score):
         # Plot the percentage of good_major_weight over total_major_weight per bin and log to wandb
         for param, df in aggregated_bin_scores.items():
-            df['track_efficiency'] = (df['good_predicted_count'] / df['total_true_count']) * 100
+            # Calculate track efficiency mode 
+            k = df['good_predicted_count']
+            n = df['total_true_count']
+            df['track_efficiency'] = (k / n) * 100
+            # Calculate track efficiency mean (note, they are not the same)
+            y_mean = ((k + 1)/ (n + 2)) * 100
+            error = np.sqrt( ((k + 1) * (k + 2)) / ((n + 2) * (n + 3)) - ((k + 1)**2) / ((n + 2)**2) )
+            y_errors = [y_mean - error, y_mean + error]
+
             df['track_fake_rate'] = ((df['total_predicted_count'] - df['good_predicted_count']) / df['total_predicted_count']) * 100
             df['percentage_good_major_weight'] = (df['good_major_weight'] / df['total_true_weight']) * 100
             
@@ -112,6 +121,8 @@ class WandbLogger:
             plt.plot(x, y, marker='o', color='black')
             plt.fill_between(x, y, 0, where=(y >= 0), facecolor='blue', alpha=0.8)
             plt.fill_between(x, y, 100, where=(y >= 0), facecolor='red', alpha=0.3)
+            # Add error bars
+            plt.errorbar(x, y, yerr=y_errors, fmt='o', color='black', capsize=5, linestyle='None', ecolor='gray', alpha=0.7)
             plt.ylim(max(y.min() - 10, 0), 100)
             plt.title(f'Track Efficiency for {param}')
             plt.xlabel(f'{param} Bins')
