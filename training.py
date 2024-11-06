@@ -4,6 +4,7 @@ import torch.nn as nn
 import numpy as np
 
 # Import supporting tools
+import wandb
 from utils.io_utils import load_config, setup_logging, unique_output_dir, copy_config_to_output, get_file_path
 from utils.wandb_utils import WandbLogger
 import argparse
@@ -18,6 +19,15 @@ from data_processing.dataset import HitsDataset, PAD_TOKEN, get_dataloaders
 
 
 def setup_training(config, device):
+    '''
+    Sets up the model, optimizer, and loss function for training. Returns the model,
+    optimizer, loss function, and the starting epoch.
+    '''
+    config_att_mask = config['model']['use_att_mask']
+    default_lr = config['training']['default_lr']
+    learning_rate = wandb.config.learning_rate if 'learning_rate' in wandb.config else default_lr
+    sweep_att_mask = wandb.config.use_att_mask if 'use_att_mask' in wandb.config else config_att_mask
+
     # model
     model = TransformerRegressor(
         num_encoder_layers = config['model']['num_encoder_layers'],
@@ -27,12 +37,12 @@ def setup_training(config, device):
         output_size = config['model']['output_size'],
         dim_feedforward=config['model']['dim_feedforward'],
         dropout=config['model']['dropout'],
-        use_att_mask=config['model']['use_att_mask']
+        use_att_mask=sweep_att_mask
     ).to(device)
 
     # optimizer
-    default_lr = config['training']['default_lr']
-    optimizer = torch.optim.Adam(model.parameters(), lr=default_lr)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     # criterion/loss function
     loss_fn = nn.MSELoss()
@@ -180,6 +190,8 @@ def main(config_path):
                                                               batch_size=64)
     logging.info(f'Data loaded.')
 
+    config
+
     # Set up the model, optimizer, and loss function
     model, optimizer, loss_fn, start_epoch = setup_training(config, device)
     model.attach_wandb_logger(wandb_logger)
@@ -233,11 +245,17 @@ def main(config_path):
     logging.info(f"Total Trainable Parameters: {total_params}")
     wandb_logger.finish()
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a model with a given config file.")
     parser.add_argument('config_path', type=str, help='Path to the configuration TOML file.')
     
     # Parse arguments
     args = parser.parse_args()
-    main(args.config_path)
+
+    full_config = load_config(args.config_path)
+    sweep_config = full_config['sweep']
+
+    # Initialize the sweep and start the sweep agent
+    
+    sweep_id = wandb.sweep(sweep=sweep_config, project=full_config['wandb']['project_name'])
+    wandb.agent(sweep_id, function=lambda: main(args.config_path))

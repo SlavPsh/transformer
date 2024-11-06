@@ -44,3 +44,13 @@ model_save_interval = 30
 entity = "spshenov-university-of-amsterdam"
 project_name = "transformer_for_particle_tracking"
 watch_interval = 50
+
+[sweep]
+method = "grid"
+
+[sweep.metric]
+name = "train/validation loss"
+goal = "minimize"
+
+[sweep.parameters.use_att_mask]
+values = [true, false]
