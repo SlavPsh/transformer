@@ -61,8 +61,8 @@ def load_trackml_data(data, normalize=False, chunking=False):
     shuffled_data["cos_phi"] = np.cos(shuffled_data["phi"])
     shuffled_data['eta'] = -np.log(np.tan(shuffled_data['theta']/2.))
     data_grouped_by_event = shuffled_data.groupby("event_id")
-    max_num_hits_data = data_grouped_by_event.size().max()
-    max_num_hits = 700
+    max_num_hits = data_grouped_by_event.size().max() + 1
+    max_num_hits_fixed = 700
 
     def extract_hits_data(event_rows):
         # Returns the hit coordinates as a padded sequence; this is the input to the transformer
