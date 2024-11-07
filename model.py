@@ -10,7 +10,7 @@ class TransformerRegressor(nn.Module):
     Takes the hits (i.e 2D or 3D coordinates) and outputs the probability of each
     hit belonging to each of the 20 possible tracks (classes).
     '''
-    def __init__(self, num_encoder_layers, d_model, n_head, input_size, output_size, dim_feedforward, dropout, use_att_mask=False, wandb_logger=None):
+    def __init__(self, num_encoder_layers, d_model, n_head, input_size, output_size, dim_feedforward, dropout, use_att_mask=False, wandb_logger=None, use_flash_attention=False):
         super(TransformerRegressor, self).__init__()
         self.input_layer = nn.Linear(input_size, d_model)
 
@@ -19,6 +19,7 @@ class TransformerRegressor(nn.Module):
         self.decoder = nn.Linear(d_model, output_size)
         self.num_heads = n_head
         self.att_mask_used = use_att_mask
+        self.flash_attention = use_flash_attention
 
         # Initialize the wandb logger
         self.wandb_logger = wandb_logger
@@ -68,9 +69,19 @@ class TransformerRegressor(nn.Module):
             expanded_mask = distance_mask.unsqueeze(1).expand(batch_size, num_heads, seq_len, seq_len).reshape(batch_size * num_heads, seq_len, seq_len)
 
             # Apply the distance mask to the attention mechanism
-            memory = self.encoder(src=x, src_key_padding_mask=padding_mask, mask=expanded_mask)
+             # Enable Flash Attention and apply to encoder
+            if self.flash_attention:
+                with torch.nn.attention.sdpa_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=False):
+                    memory = self.encoder(x, mask=expanded_mask, src_key_padding_mask=padding_mask)
+            else:
+                memory = self.encoder(src=x, src_key_padding_mask=padding_mask, mask=expanded_mask)
         else:
-            memory = self.encoder(src=x, src_key_padding_mask=padding_mask)
+            if self.flash_attention:
+                with torch.nn.attention.sdpa_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=False):
+                    memory = self.encoder(src=x, src_key_padding_mask=padding_mask)
+            else:
+                memory = self.encoder(src=x, src_key_padding_mask=padding_mask)
+
         # Regularization of the output for stability of clustering algorithm
         if torch.isnan(memory).any(): 
             logging.error("Memory contains NaN values. Check attention mask.")

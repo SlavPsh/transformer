@@ -19,6 +19,13 @@ import wandb
 
 
 def load_model(config, device):
+
+    config_flash_attention = config['model']['use_flash_attention']
+    config_att_mask = config['model']['use_att_mask']
+    
+    sweep_att_mask = wandb.config.use_att_mask if 'use_att_mask' in wandb.config else config_att_mask
+    sweep_flash_attention = wandb.config.use_flash_attention if 'use_flash_attention' in wandb.config else config_flash_attention
+
     # model
     model = TransformerRegressor(
         num_encoder_layers = config['model']['num_encoder_layers'],
@@ -28,7 +35,8 @@ def load_model(config, device):
         output_size = config['model']['output_size'],
         dim_feedforward=config['model']['dim_feedforward'],
         dropout=config['model']['dropout'],
-        use_att_mask=config['model']['use_att_mask']
+        use_att_mask=sweep_att_mask,
+        use_flash_attention=sweep_flash_attention
     ).to(device)
 
     if 'checkpoint_path' not in config['model'] or not config['model']['checkpoint_path']:
@@ -41,6 +49,8 @@ def load_model(config, device):
 
         model.load_state_dict(checkpoint['model_state_dict'])
         epoch = checkpoint['epoch'] + 1
+        
+        # Logic to set the attention mask the same as the one used during training
         if 'att_mask_used' in checkpoint:
             model.set_use_att_mask(checkpoint['att_mask_used'])
             logging.info(f'Using attention mask is set to {checkpoint['att_mask_used']}')
@@ -48,7 +58,7 @@ def load_model(config, device):
             model.set_use_att_mask(False)
             logging.info(f'Using attention mask is set to False')
 
-        
+        logging.info(f'Flash attention is set to {sweep_flash_attention}')
         logging.info(f'Loaded checkpoint from {config["model"]["checkpoint_path"]}')
         logging.info(f'Loaded model_state of epoch {epoch}. Ignoring optimizer_state. Starting evaluation from checkpoint.')
 
@@ -77,14 +87,13 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_lo
         padding_mask = (hits == PAD_TOKEN).all(dim=2)
         pred = model(hits, hits_masking, padding_mask)
 
-        hits = torch.unsqueeze(hits[~padding_mask], 0)
         pred = torch.unsqueeze(pred[~padding_mask], 0)
 
+        cluster_labels = clustering(pred, min_cl_size, min_samples)
+
+        hits = torch.unsqueeze(hits[~padding_mask], 0)
         track_params = torch.unsqueeze(track_params[~padding_mask], 0)
         track_labels = torch.unsqueeze(track_labels[~padding_mask], 0)
-
-
-        cluster_labels = clustering(pred, min_cl_size, min_samples)
 
         event_score, scores, nr_particles, predicted_tracks, true_tracks = calc_score_trackml(cluster_labels[0], track_labels[0])
         event_edge_efficiency = calc_edge_efficiency(cluster_labels[0], track_labels[0])
@@ -101,11 +110,13 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_lo
            
 
         if wandb_logger != None:
+            memory_stats = wandb_logger.get_system_memory_stats()
             metrics = {'batch/event_id[0]' : event_id[0],
                        'batch/event score' : event_score, 
                        'batch/edge_efficiency' : event_edge_efficiency,
                        'batch/num_hits_per_event' : len(hits[0]),
-                       'batch/num_particles_per_event' : nr_particles
+                       'batch/num_particles_per_event' : nr_particles,
+                       **memory_stats
                        }
             wandb_logger.log(metrics)
 
@@ -158,8 +169,7 @@ def main(config_path):
                                         valid_frac=0.15,
                                         test_frac=0.15,
                                         batch_size=64)
-    print(strftime("%Y-%m-%d %H:%M:%S", gmtime()))
-    print("Data loaded")
+
     logging.info("Data loaded")
 
     model = load_model(config, device)  
@@ -167,8 +177,8 @@ def main(config_path):
 
     logging.info("Started evaluation")
 
-    cl_size = 5
-    min_sam = 4
+    cl_size = wandb.config.min_cl_size if 'min_cl_size' in wandb.config else 5
+    min_sam = wandb.config.min_samples if 'min_samples' in wandb.config else 3
     bin_ranges = config['bin_ranges']
     preds, score, edge_efficiency, perfect, double_maj, lhc = test_main(model, test_loader, cl_size, min_sam, bin_ranges, wandb_logger)
     print(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}, Edge efficiency {edge_efficiency}', flush=True)
@@ -176,11 +186,6 @@ def main(config_path):
     #print(perfect, double_maj, lhc, flush=True)
 
     wandb_logger.log({'total/cluster size' : cl_size, 'total/min sample size' : min_sam,'total/trackML score': score, 'total/edge_efficiency': edge_efficiency})
-
-    if cl_size == 5 and min_sam == 3:
-        preds = list(preds.values())
-        #for param in params:
-        #    plot_heatmap(preds, param, args.model_name)
     
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logging.info(f"Total Trainable Parameters: {total_params}")
@@ -193,4 +198,10 @@ if __name__ == "__main__":
     
     # Parse arguments
     args = parser.parse_args()
-    main(args.config_path)
+    full_config = load_config(args.config_path)
+    sweep_config = full_config['sweep']
+
+    # Initialize the sweep and start the sweep agent
+    
+    sweep_id = wandb.sweep(sweep=sweep_config)
+    wandb.agent(sweep_id, function=lambda: main(args.config_path))

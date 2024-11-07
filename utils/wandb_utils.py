@@ -1,5 +1,6 @@
 import wandb
 import os
+import psutil
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,8 +15,8 @@ class WandbLogger:
         job_type="training",
     ):
         self.config = config
-        self.entity = config["entity"]
-        self.project_name = config["project_name"]
+        #self.entity = config["entity"]
+        #self.project_name = config["project_name"]
         self.run_name = run_name
         self.output_dir = output_dir
         self.initialized = False
@@ -28,8 +29,6 @@ class WandbLogger:
     def initialize(self):
         if not self.initialized:
             self.run = wandb.init(
-                entity=self.entity,
-                project=self.project_name,
                 name=self.run_name,
                 config=self.config,
                 dir=self.output_dir,
@@ -37,21 +36,6 @@ class WandbLogger:
             )
 
             self.initialized = True
-
-    def initialize_sweep(self):
-        if not self.initialized:
-            self.initialize()
-            # Extract sweep configuration
-            sweep_config = {
-                'method': self.config['sweep']['method'],
-                'metric': {
-                    'name': self.config['sweep']['metric_name'],
-                    'goal': self.config['sweep']['metric_goal']
-                },
-                'parameters': self.config['sweep']['parameters']
-            }
-            self.sweep_id = wandb.sweep(sweep_config, project=self.project_name)
-            print(f'Sweep ID: {self.sweep_id}')
     
     def get_config(self):
         return wandb.config
@@ -60,6 +44,27 @@ class WandbLogger:
         if not self.initialized:
             self.initialize()
         wandb.log(data)
+
+    def get_system_memory_stats(self):
+        # GPU memory stats (in MB)
+        if torch.cuda.is_available():
+            gpu_memory_allocated = torch.cuda.memory_allocated() / (1024 * 1024)
+            gpu_memory_reserved = torch.cuda.memory_reserved() / (1024 * 1024)
+        else:
+            gpu_memory_allocated = 0
+            gpu_memory_reserved = 0
+
+        # CPU memory stats (in MB)
+        cpu_memory = psutil.virtual_memory()
+        cpu_memory_used = cpu_memory.used / (1024 * 1024)
+        cpu_memory_total = cpu_memory.total / (1024 * 1024)
+    
+        return {
+            'gpu_memory_allocated_mb': gpu_memory_allocated,
+            'gpu_memory_reserved_mb': gpu_memory_reserved,
+            'cpu_memory_used_mb': cpu_memory_used,
+            'cpu_memory_total_mb': cpu_memory_total
+        }
 
     def log_gradient_norm(self, model):
         if not self.initialized:
@@ -105,11 +110,13 @@ class WandbLogger:
             # Calculate track efficiency mode 
             k = df['good_predicted_count']
             n = df['total_true_count']
-            df['track_efficiency'] = (k / n) * 100
+            efficiency = (k / n) * 100
+            df['track_efficiency'] = efficiency
             # Calculate track efficiency mean (note, they are not the same)
             y_mean = ((k + 1)/ (n + 2)) * 100
-            error = np.sqrt( ((k + 1) * (k + 2)) / ((n + 2) * (n + 3)) - ((k + 1)**2) / ((n + 2)**2) )
-            y_errors = [y_mean - error, y_mean + error]
+            bayes_error = np.sqrt( ((k + 1) * (k + 2)) / ((n + 2) * (n + 3)) - ((k + 1)**2) / ((n + 2)**2) )*100
+            norm_error = np.sqrt((k/n) * (1 - k/n) / n) * 100
+            y_errors = [norm_error, norm_error]
 
             df['track_fake_rate'] = ((df['total_predicted_count'] - df['good_predicted_count']) / df['total_predicted_count']) * 100
             df['percentage_good_major_weight'] = (df['good_major_weight'] / df['total_true_weight']) * 100
@@ -118,11 +125,13 @@ class WandbLogger:
             # Plot track_efficiency
             plt.figure()
             y = df['track_efficiency']
-            plt.plot(x, y, marker='o', color='black')
+            
+            #plt.plot(x, y, marker='o', color='black')
+            # Add error bars
+            plt.errorbar(x, y, yerr=y_errors, fmt='o', color='black', capsize=5, linestyle='None', ecolor='black', alpha=0.7)
             plt.fill_between(x, y, 0, where=(y >= 0), facecolor='blue', alpha=0.8)
             plt.fill_between(x, y, 100, where=(y >= 0), facecolor='red', alpha=0.3)
-            # Add error bars
-            plt.errorbar(x, y, yerr=y_errors, fmt='o', color='black', capsize=5, linestyle='None', ecolor='gray', alpha=0.7)
+
             plt.ylim(max(y.min() - 10, 0), 100)
             plt.title(f'Track Efficiency for {param}')
             plt.xlabel(f'{param} Bins')

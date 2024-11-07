@@ -41,11 +41,11 @@ epoch_log_interval = 1
 model_save_interval = 1
 
 [wandb]
-entity = "spshenov-university-of-amsterdam"
-project_name = "transformer_for_particle_tracking"
 watch_interval = 1
 
 [sweep]
+entity = "spshenov-university-of-amsterdam"
+project = "transformer_for_particle_tracking"
 method = "grid"
 
 [sweep.metric]

@@ -8,6 +8,7 @@ data_dir = "/data/atlas/users/spshenov/ml_input_data"
 # trackml_tiny_10to50tracks_100events.csv
 # trackml_short_10to50_tracks_5k_events.csv
 # trackml_10to50tracks_40kevents.csv
+# trackml_200to500tracks_40kevents.csv
 data_file = "trackml_tiny_10to50tracks_100events.csv"
 
 
@@ -36,17 +37,24 @@ base_path = "/data/atlas/users/spshenov/studio/evaluation"
 level = "INFO"
 
 [wandb]
-entity = "spshenov-university-of-amsterdam"
-project_name = "transformer_for_particle_tracking"
 
 [sweep]
-method = "random"  # or 'grid', 'bayes'
-metric_name = "test/event score"
-metric_goal = "maximize"  # or 'minimize'
+entity = "spshenov-university-of-amsterdam"
+project = "transformer_for_particle_tracking"
+method = "grid"  # or 'random', 'bayes'
 
-[sweep.parameters]
-min_cl_size = {values = [5]}
-min_samples = {values = [3, 4]}
+[sweep.metric]
+name = "test/event score"
+goal = "maximize"
+
+[sweep.parameters.use_att_mask]
+values = [false]
+
+[sweep.parameters.min_cl_size]
+values = [5]
+
+[sweep.parameters.min_samples]
+values = [3, 4]
 
 [bin_ranges.q]
 min = -1.5

@@ -39,8 +39,24 @@ base_path = "/data/atlas/users/spshenov/evaluation"
 level = "INFO"
 
 [wandb]
+
+[sweep]
 entity = "spshenov-university-of-amsterdam"
-project_name = "transformer_for_particle_tracking"
+project = "transformer_for_particle_tracking"
+method = "grid"  # or 'random', 'bayes'
+
+[sweep.metric]
+name = "test/event score"
+goal = "maximize"
+
+[sweep.parameters.use_att_mask]
+values = [false]
+
+[sweep.parameters.min_cl_size]
+values = [5]
+
+[sweep.parameters.min_samples]
+values = [3, 4]
 
 [bin_ranges.q]
 min = -1.5

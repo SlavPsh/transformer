@@ -23,10 +23,13 @@ def setup_training(config, device):
     Sets up the model, optimizer, and loss function for training. Returns the model,
     optimizer, loss function, and the starting epoch.
     '''
+    config_flash_attention = config['model']['use_flash_attention']
     config_att_mask = config['model']['use_att_mask']
-    default_lr = config['training']['default_lr']
-    learning_rate = wandb.config.learning_rate if 'learning_rate' in wandb.config else default_lr
+    config_lr = config['training']['default_lr']
+
+    sweep_learning_rate = wandb.config.learning_rate if 'learning_rate' in wandb.config else config_lr
     sweep_att_mask = wandb.config.use_att_mask if 'use_att_mask' in wandb.config else config_att_mask
+    sweep_flash_attention = wandb.config.use_flash_attention if 'use_flash_attention' in wandb.config else config_flash_attention
 
     # model
     model = TransformerRegressor(
@@ -37,12 +40,13 @@ def setup_training(config, device):
         output_size = config['model']['output_size'],
         dim_feedforward=config['model']['dim_feedforward'],
         dropout=config['model']['dropout'],
-        use_att_mask=sweep_att_mask
+        use_att_mask=sweep_att_mask,
+        flash_attention=sweep_flash_attention
     ).to(device)
 
     # optimizer
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(model.parameters(), lr=sweep_learning_rate)
 
     # criterion/loss function
     loss_fn = nn.MSELoss()
@@ -220,7 +224,8 @@ def main(config_path):
         train_losses.append(train_loss)
         val_losses.append(val_loss)
 
-        wandb_logger.log({'train/train_loss' : train_loss, 'train/epoch' : epoch, 'train/validation loss' : val_loss})
+        memory_stats = wandb_logger.get_system_memory_stats()
+        wandb_logger.log({'train/train_loss' : train_loss, 'train/epoch' : epoch, 'train/validation loss' : val_loss, **memory_stats})
 
         if val_loss < min_val_loss:
             # If the model has a new best validation loss, save it as "the best"
@@ -257,5 +262,5 @@ if __name__ == "__main__":
 
     # Initialize the sweep and start the sweep agent
     
-    sweep_id = wandb.sweep(sweep=sweep_config, project=full_config['wandb']['project_name'])
+    sweep_id = wandb.sweep(sweep=sweep_config)
     wandb.agent(sweep_id, function=lambda: main(args.config_path))
