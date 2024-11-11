@@ -118,12 +118,17 @@ class WandbLogger:
             # Calculate track efficiency mean (note, not the same as the mode)
             y_mean = ((k + 1)/ (n + 2)) * 100
             bayes_error = np.sqrt( ((k + 1) * (k + 2)) / ((n + 2) * (n + 3)) - ((k + 1)**2) / ((n + 2)**2) )*100
-            alpha = 0.32
-            lower_error = y - 100*beta.ppf(alpha / 2, k, n - k + 1)      # Lower error
-            upper_error = 100*beta.ppf(1 - alpha / 2, k + 1, n - k) - y  # Upper error
+            
+            # Calculate track efficiency error as Clopper–Pearson interval
+            alpha =  0.05
+            # Calculate lower and upper bounds of the confidence interval
+            p_lower = beta.ppf(alpha / 2, k, n - k + 1) if k > 0 else 0
+            p_upper = beta.ppf(1 - alpha / 2, k + 1, n - k) if k < n else 1
+            lower_error = y - 100*p_lower      # Lower error
+            upper_error = 100*p_upper - y  # Upper error
             lower_error = np.maximum(lower_error, 0)
             upper_error = np.maximum(upper_error, 0)
-            # Calculate track efficiency error as Clopper–Pearson interval
+            
             norm_error = np.sqrt((k/n) * (1 - k/n) / n) * 100
             y_errors = [lower_error, upper_error]
 
