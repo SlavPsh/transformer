@@ -20,7 +20,7 @@ output_size = 4
 dim_feedforward = 128
 dropout = 0.1
 use_flash_attention = false
-use_att_mask = true
+use_att_mask = false
 
 [training]
 batch_size = 64
@@ -53,4 +53,4 @@ name = "train/validation loss"
 goal = "minimize"
 
 [sweep.parameters.use_att_mask]
-values = [true, false]
+values = [false]

@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from torch.nn.attention import SDPBackend, sdpa_kernel
 import numpy as np
 from hdbscan import HDBSCAN
 import logging
@@ -71,13 +72,13 @@ class TransformerRegressor(nn.Module):
             # Apply the distance mask to the attention mechanism
              # Enable Flash Attention and apply to encoder
             if self.flash_attention:
-                with torch.nn.attention.sdpa_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=False):
+                with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
                     memory = self.encoder(x, mask=expanded_mask, src_key_padding_mask=padding_mask)
             else:
                 memory = self.encoder(src=x, src_key_padding_mask=padding_mask, mask=expanded_mask)
         else:
             if self.flash_attention:
-                with torch.nn.attention.sdpa_kernel(enable_flash=True, enable_math=False, enable_mem_efficient=False):
+                with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
                     memory = self.encoder(src=x, src_key_padding_mask=padding_mask)
             else:
                 memory = self.encoder(src=x, src_key_padding_mask=padding_mask)

@@ -47,6 +47,7 @@ def load_model(config, device):
         else:
             checkpoint = torch.load(config['model']['checkpoint_path'])
 
+        logging.info(f'Checkpoint :  {checkpoint.keys()}')
         model.load_state_dict(checkpoint['model_state_dict'])
         epoch = checkpoint['epoch'] + 1
         

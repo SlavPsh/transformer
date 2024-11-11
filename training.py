@@ -180,7 +180,9 @@ def main(config_path):
     early_stopping_epoch = config['training']['early_stopping']['patience']
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
     logging.info(f'Device: {device}')
+    logging.info(f'Torch cuda version: {torch.version.cuda}')
 
     torch.manual_seed(37)  # for reproducibility
     data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])

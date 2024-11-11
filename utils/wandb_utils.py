@@ -4,6 +4,8 @@ import psutil
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
+from  scipy.stats import beta
+import pandas as pd
 
 
 class WandbLogger:
@@ -112,11 +114,16 @@ class WandbLogger:
             n = df['total_true_count']
             efficiency = (k / n) * 100
             df['track_efficiency'] = efficiency
-            # Calculate track efficiency mean (note, they are not the same)
+            y = df['track_efficiency']
+            # Calculate track efficiency mean (note, not the same as the mode)
             y_mean = ((k + 1)/ (n + 2)) * 100
             bayes_error = np.sqrt( ((k + 1) * (k + 2)) / ((n + 2) * (n + 3)) - ((k + 1)**2) / ((n + 2)**2) )*100
+            alpha = 0.05
+            p_u = beta.ppf(alpha / 2, k, n - k + 1)      # Lower bound
+            p_o = beta.ppf(1 - alpha / 2, k + 1, n - k)  # Upper bound
+            # Calculate track efficiency error as Clopper–Pearson interval
             norm_error = np.sqrt((k/n) * (1 - k/n) / n) * 100
-            y_errors = [norm_error, norm_error]
+            y_errors = [p_u, p_o]
 
             df['track_fake_rate'] = ((df['total_predicted_count'] - df['good_predicted_count']) / df['total_predicted_count']) * 100
             df['percentage_good_major_weight'] = (df['good_major_weight'] / df['total_true_weight']) * 100
@@ -124,7 +131,7 @@ class WandbLogger:
             x = df[f'{param}_bin'].astype(str)
             # Plot track_efficiency
             plt.figure()
-            y = df['track_efficiency']
+
             
             #plt.plot(x, y, marker='o', color='black')
             # Add error bars
