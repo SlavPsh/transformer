@@ -114,16 +114,18 @@ class WandbLogger:
             n = df['total_true_count']
             efficiency = (k / n) * 100
             df['track_efficiency'] = efficiency
-            y = df['track_efficiency']
+            y = efficiency
             # Calculate track efficiency mean (note, not the same as the mode)
             y_mean = ((k + 1)/ (n + 2)) * 100
             bayes_error = np.sqrt( ((k + 1) * (k + 2)) / ((n + 2) * (n + 3)) - ((k + 1)**2) / ((n + 2)**2) )*100
-            alpha = 0.05
-            p_u = beta.ppf(alpha / 2, k, n - k + 1)      # Lower bound
-            p_o = beta.ppf(1 - alpha / 2, k + 1, n - k)  # Upper bound
+            alpha = 0.32
+            lower_error = y - 100*beta.ppf(alpha / 2, k, n - k + 1)      # Lower error
+            upper_error = 100*beta.ppf(1 - alpha / 2, k + 1, n - k) - y  # Upper error
+            lower_error = np.maximum(lower_error, 0)
+            upper_error = np.maximum(upper_error, 0)
             # Calculate track efficiency error as Clopper–Pearson interval
             norm_error = np.sqrt((k/n) * (1 - k/n) / n) * 100
-            y_errors = [p_u, p_o]
+            y_errors = [lower_error, upper_error]
 
             df['track_fake_rate'] = ((df['total_predicted_count'] - df['good_predicted_count']) / df['total_predicted_count']) * 100
             df['percentage_good_major_weight'] = (df['good_major_weight'] / df['total_true_weight']) * 100
