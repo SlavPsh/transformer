@@ -122,10 +122,10 @@ class WandbLogger:
             # Calculate track efficiency error as Clopper–Pearson interval
             alpha =  0.05
             # Calculate lower and upper bounds of the confidence interval
-            p_lower = beta.ppf(alpha / 2, k, n - k + 1) if k > 0 else 0
-            p_upper = beta.ppf(1 - alpha / 2, k + 1, n - k) if k < n else 1
-            lower_error = y - 100*p_lower      # Lower error
-            upper_error = 100*p_upper - y  # Upper error
+            e_lower = np.where(k > 0, beta.ppf(alpha / 2, k, n - k + 1), 0)
+            e_upper = np.where(k < n , beta.ppf(1 - alpha / 2, k + 1, n - k), 1)
+            lower_error = y - 100*e_lower      # Lower error
+            upper_error = 100*e_upper - y  # Upper error
             lower_error = np.maximum(lower_error, 0)
             upper_error = np.maximum(upper_error, 0)
             
