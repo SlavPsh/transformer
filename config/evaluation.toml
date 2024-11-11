@@ -15,7 +15,7 @@ num_classes = 451
 
 
 [model]
-checkpoint_path = "/data/atlas/users/spshenov/trained_models/models_5_features_600epochs/model_trackml_10to50_best.pth"
+checkpoint_path = "/data/atlas/users/spshenov/trained_models/models427epochs/model_trackml_10to50_best"
 # checkpoint_path = "/data/atlas/users/spshenov/trained_models/20241104_120903_orthodox-elegant-bloodhound_train/model_best.pth"
 num_encoder_layers = 6
 d_model = 32

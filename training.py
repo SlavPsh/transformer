@@ -41,7 +41,7 @@ def setup_training(config, device):
         dim_feedforward=config['model']['dim_feedforward'],
         dropout=config['model']['dropout'],
         use_att_mask=sweep_att_mask,
-        flash_attention=sweep_flash_attention
+        use_flash_attention=sweep_flash_attention
     ).to(device)
 
     # optimizer
