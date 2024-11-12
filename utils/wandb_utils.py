@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from  scipy.stats import beta
 import pandas as pd
+import pickle
 
 
 class WandbLogger:
@@ -112,6 +113,10 @@ class WandbLogger:
             self.initialized = False
 
     def plot_binned_scores(self, aggregated_bin_scores, total_average_score):
+        # save the aggregated_bin_scores to a pickle file
+        with open(os.path.join(self.output_dir, 'aggregated_bin_scores.pkl'), 'wb') as f:
+            pickle.dump(aggregated_bin_scores, f)
+
         # Plot the percentage of good_major_weight over total_major_weight per bin and log to wandb
         for param, df in aggregated_bin_scores.items():
             # Calculate track efficiency mode 
@@ -150,7 +155,7 @@ class WandbLogger:
             #plt.plot(x, y, marker='o', color='black')
             # Add error bars
             plt.errorbar(midpoints, y, xerr=horizontal_error, fmt='o', color='black', capsize=0, capthick=1, elinewidth=1)
-            plt.errorbar(midpoints, y, yerr=y_errors, label="model", fmt='o', color='black', capsize=3, capthick=1, elinewidth=1)
+            plt.errorbar(midpoints, y, yerr=y_errors, label="EncReg", fmt='o', color='black', capsize=3, capthick=1, elinewidth=1)
             plt.ylim(max(y.min() - 10, 0), 100)
             plt.title(f'Track Efficiency for {param}')
             # Labels and legend
@@ -175,10 +180,10 @@ class WandbLogger:
             upper_error = np.maximum(upper_error, 0)
             y_errors = [lower_error, upper_error]
 
-            plt.figure()
-            plt.plot(midpoints, y, marker='o', color='black')
+            plt.figure(figsize=(8, 5))
+
             plt.errorbar(midpoints, y, xerr=horizontal_error, fmt='o', color='black', capsize=0, capthick=1, elinewidth=1)
-            plt.errorbar(midpoints, y, yerr=y_errors, label="model", fmt='o', color='black', capsize=3, capthick=1, elinewidth=1)
+            plt.errorbar(midpoints, y, yerr=y_errors, label="EncReg", fmt='o', color='black', capsize=3, capthick=1, elinewidth=1)
             plt.ylim(max(y.min() - 10, 0), min(y.max() + 20, 100))
             plt.title(f'Track Fake Rate for {param}')
             plt.xlabel(f'Particle {param}')
@@ -189,7 +194,7 @@ class WandbLogger:
             plt.close()
             
             # Plot percentage_good_major_weight
-            plt.figure()
+            plt.figure(figsize=(8, 5))
             y = (df['good_major_weight'] / df['total_true_weight']) * 100
             plt.plot(midpoints, y, marker='o', color='black')
 
