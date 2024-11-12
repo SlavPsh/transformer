@@ -112,12 +112,12 @@ class WandbLogger:
             # Calculate track efficiency mode 
             k = df['good_predicted_count']
             n = df['total_true_count']
-            efficiency = (k / n) * 100
-            df['track_efficiency'] = efficiency
-            y = efficiency
+            y = (k / n) * 100
+
             # Calculate track efficiency mean (note, not the same as the mode)
             y_mean = ((k + 1)/ (n + 2)) * 100
             bayes_error = np.sqrt( ((k + 1) * (k + 2)) / ((n + 2) * (n + 3)) - ((k + 1)**2) / ((n + 2)**2) )*100
+            norm_error = np.sqrt((k/n) * (1 - k/n) / n) * 100
             
             # Calculate track efficiency error as Clopper–Pearson interval
             alpha =  0.05
@@ -129,13 +129,8 @@ class WandbLogger:
             lower_error = np.maximum(lower_error, 0)
             upper_error = np.maximum(upper_error, 0)
             
-            norm_error = np.sqrt((k/n) * (1 - k/n) / n) * 100
             y_errors = [lower_error, upper_error]
 
-            df['track_fake_rate'] = ((df['total_predicted_count'] - df['good_predicted_count']) / df['total_predicted_count']) * 100
-            df['percentage_good_major_weight'] = (df['good_major_weight'] / df['total_true_weight']) * 100
-            
-            x = df[f'{param}_bin'].astype(str)
 
             # Get left and right edges of each interval
             left_edges = [interval.left for interval in df[f'{param}_bin']]
@@ -149,48 +144,56 @@ class WandbLogger:
             
             #plt.plot(x, y, marker='o', color='black')
             # Add error bars
-            plt.errorbar(midpoints, y, xerr=horizontal_error, label="model", fmt='o', color='black', capsize=0, capthick=1, elinewidth=1)
-            plt.errorbar(midpoints, y, xerr=horizontal_error, yerr=y_errors, label="model", fmt='o', color='black', capsize=3, capthick=1, elinewidth=1)
+            plt.errorbar(midpoints, y, xerr=horizontal_error, fmt='o', color='black', capsize=0, capthick=1, elinewidth=1)
+            plt.errorbar(midpoints, y, yerr=y_errors, label="model", fmt='o', color='black', capsize=3, capthick=1, elinewidth=1)
             plt.ylim(max(y.min() - 10, 0), 100)
             plt.title(f'Track Efficiency for {param}')
             # Labels and legend
             plt.ylabel("Efficiency")           
             plt.xlabel(f'Particle {param}')
-            plt.ylabel('Efficiency')
             plt.legend(loc="lower left")
             plt.tight_layout()
-            self.log({f'{param}_track_efficiency': wandb.Image(plt)})
             plt.grid(True, linestyle=':', color='gray', alpha=0.7)
+            self.log({f'{param}_track_efficiency': wandb.Image(plt)})
             plt.close()
 
             # Plot track_fake_rate
+            k_fake = df['total_predicted_count'] - df['good_predicted_count']
+            n_fake = df['total_predicted_count']
+            y = (k_fake / n_fake) * 100
+            # Calculate lower and upper bounds of the confidence interval
+            e_lower = np.where(k_fake > 0, beta.ppf(alpha / 2, k_fake, n_fake - k_fake + 1), 0)
+            e_upper = np.where(k_fake < n_fake , beta.ppf(1 - alpha / 2, k_fake + 1, n_fake - k_fake), 1)
+            lower_error = y - 100*e_lower      # Lower error
+            upper_error = 100*e_upper - y  # Upper error
+            lower_error = np.maximum(lower_error, 0)
+            upper_error = np.maximum(upper_error, 0)
+            y_errors = [lower_error, upper_error]
+            
             plt.figure()
-            y = df['track_fake_rate']
-            plt.plot(x, y, marker='o', color='black')
-            plt.fill_between(x, y, 0, where=(y >= 0), facecolor='red', alpha=0.8)
-            plt.fill_between(x, y, 100, where=(y >= 0), facecolor='green', alpha=0.3)
+            plt.plot(midpoints, y, marker='o', color='black')
+            plt.errorbar(midpoints, y, xerr=horizontal_error, fmt='o', color='black', capsize=0, capthick=1, elinewidth=1)
+            plt.errorbar(midpoints, y, yerr=y_errors, label="model", fmt='o', color='black', capsize=3, capthick=1, elinewidth=1)
             plt.ylim(max(y.min() - 10, 0), min(y.max() + 20, 100))
             plt.title(f'Track Fake Rate for {param}')
-            plt.xlabel(f'{param} Bins')
+            plt.xlabel(f'Particle {param}')
             plt.ylabel('Fake Rate (%)')
-            plt.xticks(rotation=45)
             plt.tight_layout()
+            plt.grid(True, linestyle=':', color='gray', alpha=0.7)
             self.log({f'{param}_track_fake_rate': wandb.Image(plt)})
             plt.close()
             
             # Plot percentage_good_major_weight
             plt.figure()
-            y = df['percentage_good_major_weight']
-            plt.plot(x, y, marker='o', color='black')
-            plt.fill_between(x, y, 0, where=(y >= 0), facecolor='blue', alpha=0.8)
-            plt.fill_between(x, y, 100, where=(y >= 0), facecolor='red', alpha=0.3)
+            y = (df['good_major_weight'] / df['total_true_weight']) * 100
+            plt.plot(midpoints, y, marker='o', color='black')
+
             plt.ylim(max(y.min() - 10, 0) , 100)  # Set y-axis range for better resolution
             plt.title(f'Good Tracks Weight vs True Weight for {param}. Avg Score: {total_average_score*100:.1f}')
-            plt.xlabel(f'{param} Bins')
-            plt.ylabel('Percentage (%)')
-            plt.xticks(rotation=45)
+            plt.xlabel(f'Particle {param}')
+            plt.ylabel('Percentage')
             plt.tight_layout()
-
+            plt.grid(True, linestyle=':', color='gray', alpha=0.7)
             self.log({f'aggregated_bin_scores_{param}': wandb.Image(plt)})
             plt.close()
 
