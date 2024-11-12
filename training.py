@@ -80,7 +80,7 @@ def setup_training(config, device):
     
     return model, optimizer, loss_fn, start_epoch
 
-def train_epoch(model, optim, train_loader, loss_fn):
+def train_epoch(model, optim, train_loader, loss_fn, device):
     '''
     Conducts a single epoch of training: prediction, loss calculation, and loss
     backpropagation. Returns the average loss over the whole train data.
@@ -91,11 +91,12 @@ def train_epoch(model, optim, train_loader, loss_fn):
     losses = 0.
 
     for data in train_loader:
-        _, hits, hits_masking, track_params, classes = data
+        _, hits, hits_masking, track_params, _ = data
         # Zero the gradients
 
         optim.zero_grad()
-
+        # Transfer batch to GPU
+        hits, hits_masking, track_params = hits.to(device), hits_masking.to(device), track_params.to(device)
         # Make prediction
         padding_mask = (hits == PAD_TOKEN).all(dim=2)
         pred = model(hits, hits_masking, padding_mask)
@@ -113,9 +114,14 @@ def train_epoch(model, optim, train_loader, loss_fn):
         optim.step()
         losses += loss.item()
 
+        # Free up memory explicitely
+        del hits, hits_masking, track_params, padding_mask, pred
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
     return losses / len(train_loader)
 
-def evaluate(model, validation_loader, loss_fn):
+def evaluate(model, validation_loader, loss_fn, device):
     '''
     Evaluates the network on the validation data by making a prediction and
     calculating the loss. Returns the average loss over the whole val data.
@@ -125,7 +131,8 @@ def evaluate(model, validation_loader, loss_fn):
     losses = 0.
     with torch.no_grad():
         for data in validation_loader:
-            _, hits, hits_masking, track_params, classes = data
+            _, hits, hits_masking, track_params, _ = data
+            hits, hits_masking, track_params = hits.to(device), hits_masking.to(device), track_params.to(device)
             # Make prediction
             padding_mask = (hits == PAD_TOKEN).all(dim=2)
             pred = model(hits, hits_masking, padding_mask)
@@ -140,6 +147,11 @@ def evaluate(model, validation_loader, loss_fn):
             
             loss = loss_fn(pred, track_params)
             losses += loss.item()
+
+            # Free up memory explicitely
+            del hits, hits_masking, track_params, padding_mask, pred
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
             
     return losses / len(validation_loader)
 
@@ -188,7 +200,7 @@ def main(config_path):
     data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
     logging.info(f'Loading data from {data_path} ...')
     hits_data, hits_masking, track_params_data, track_classes_data = load_trackml_data(data=data_path)
-    dataset = HitsDataset(device, hits_data, hits_masking, track_params_data, track_classes_data)
+    dataset = HitsDataset(hits_data, hits_masking, track_params_data, track_classes_data)
     train_loader, valid_loader, _ = get_dataloaders(dataset,
                                                               train_frac=0.7,
                                                               valid_frac=0.15,
@@ -220,10 +232,10 @@ def main(config_path):
 
     for epoch in range(start_epoch, config['training']['total_epochs']):
         # Train the model
-        train_loss = train_epoch(model, optimizer, train_loader, loss_fn)
+        train_loss = train_epoch(model, optimizer, train_loader, loss_fn, device)
 
         # Evaluate using validation split
-        val_loss = evaluate(model, valid_loader, loss_fn)
+        val_loss = evaluate(model, valid_loader, loss_fn, device)
 
         # Print info to the cluster logging
         logging.info(strftime("%Y-%m-%d %H:%M:%S", gmtime()))

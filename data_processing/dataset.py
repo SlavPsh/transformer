@@ -7,11 +7,11 @@ PAD_TOKEN = -1
 
 class HitsDataset(Dataset):
 
-    def __init__(self, device, hits_data, hists_masking, track_params_data=None, particle_data=None):
-        self.hits_data = hits_data.to(device)
-        self.hits_masking = hists_masking.to(device)
-        self.track_params_data = track_params_data.to(device)
-        self.particle_data = particle_data.to(device)
+    def __init__(self, hits_data, hists_masking, track_params_data=None, particle_data=None):
+        self.hits_data = hits_data
+        self.hits_masking = hists_masking
+        self.track_params_data = track_params_data
+        self.particle_data = particle_data
         self.total_events = self.__len__()
 
     def __len__(self):
