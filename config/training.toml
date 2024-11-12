@@ -24,7 +24,7 @@ use_flash_attention = false
 use_att_mask = false
 
 [training]
-batch_size = 4
+batch_size = 1
 total_epochs = 1000
 shuffle = false # whether training data should be shuffled
 start_from_scratch = true
