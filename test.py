@@ -66,7 +66,7 @@ def load_model(config, device):
     model.eval()
     return model 
 
-def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_logger=None, device='cpu'):
+def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, wandb_logger=None):
     '''
     Evaluates the network on the test data. Returns the predictions and scores.
     '''
@@ -83,7 +83,7 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_lo
         # data is per event (becasue batch_size = 1)
         # Split the data for this event
         event_id, hits, hits_masking, track_params, track_labels = data
-        hits, hits_masking, track_params = hits.to(device), hits_masking.to(device), track_params.to(device), track_labels.to(device)
+        hits, hits_masking, track_params, track_labels = hits.to(device), hits_masking.to(device), track_params.to(device), track_labels.to(device)
  
         # Make prediction
         padding_mask = (hits == PAD_TOKEN).all(dim=2)
@@ -186,7 +186,7 @@ def main(config_path):
     cl_size = wandb.config.min_cl_size if 'min_cl_size' in wandb.config else 5
     min_sam = wandb.config.min_samples if 'min_samples' in wandb.config else 3
     bin_ranges = config['bin_ranges']
-    score, edge_efficiency, perfect, double_maj, lhc = test_main(model, test_loader, cl_size, min_sam, bin_ranges, wandb_logger)
+    score, edge_efficiency, perfect, double_maj, lhc = test_main(model, test_loader, cl_size, min_sam, bin_ranges, device, wandb_logger)
     print(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}, Edge efficiency {edge_efficiency}', flush=True)
     logging.info(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}, Edge efficiency {edge_efficiency}')
     #print(perfect, double_maj, lhc, flush=True)
