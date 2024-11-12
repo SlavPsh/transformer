@@ -57,15 +57,20 @@ class WandbLogger:
             gpu_memory_reserved = 0
 
         # CPU memory stats (in MB)
-        cpu_memory = psutil.virtual_memory()
-        cpu_memory_used = cpu_memory.used / (1024 * 1024)
-        cpu_memory_total = cpu_memory.total / (1024 * 1024)
+        # Get the current process
+        process = psutil.Process()
+
+        # Get memory information for the process
+        memory_info = process.memory_info()
+
+        # memory_info.rss gives the Resident Set Size, the memory actually used by the process in bytes
+        cpu_used_memory = memory_info.rss  # Memory used by this process in bytes
+        cpu_used_memory_mb = cpu_used_memory / (1024 ** 2)  # Convert to MB
     
         return {
             'gpu_memory_allocated_mb': gpu_memory_allocated,
             'gpu_memory_reserved_mb': gpu_memory_reserved,
-            'cpu_memory_used_mb': cpu_memory_used,
-            'cpu_memory_total_mb': cpu_memory_total
+            'cpu_memory_used_mb': cpu_used_memory_mb
         }
 
     def log_gradient_norm(self, model):
@@ -169,7 +174,7 @@ class WandbLogger:
             lower_error = np.maximum(lower_error, 0)
             upper_error = np.maximum(upper_error, 0)
             y_errors = [lower_error, upper_error]
-            
+
             plt.figure()
             plt.plot(midpoints, y, marker='o', color='black')
             plt.errorbar(midpoints, y, xerr=horizontal_error, fmt='o', color='black', capsize=0, capthick=1, elinewidth=1)
