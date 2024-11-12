@@ -14,18 +14,18 @@ dataloader_num_workers = 4
 
 [model]
 num_encoder_layers = 6
-d_model = 32
+d_model = 128
 n_head = 4
 input_size = 3
 output_size = 4
-dim_feedforward = 128
+dim_feedforward = 256
 dropout = 0.1
 use_flash_attention = false
 use_att_mask = false
 
 [training]
 batch_size = 1
-total_epochs = 1000
+total_epochs = 500
 shuffle = false # whether training data should be shuffled
 start_from_scratch = true
 default_lr = 1e-3
@@ -42,7 +42,7 @@ epoch_log_interval = 10
 model_save_interval = 30
 
 [wandb]
-watch_interval = 50
+watch_interval = 1
 
 [sweep]
 entity = "spshenov-university-of-amsterdam"

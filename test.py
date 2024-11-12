@@ -163,13 +163,13 @@ def main(config_path):
     data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
     logging.info(f'Loading data from {data_path} ...')
     hits_data, hits_masking, track_params_data, track_particle_data = load_trackml_data(data=data_path)
-    dataset = HitsDataset(device, hits_data, hits_masking, track_params_data, track_particle_data)
+    dataset = HitsDataset(hits_data, hits_masking, track_params_data, track_particle_data)
     # Test loader has batch size 1 in defintion
     _, _, test_loader = get_dataloaders(dataset,
                                         train_frac=0.7,
                                         valid_frac=0.15,
                                         test_frac=0.15,
-                                        batch_size=64)
+                                        batch_size=1)
 
     logging.info("Data loaded")
 

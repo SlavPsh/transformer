@@ -136,23 +136,31 @@ class WandbLogger:
             df['percentage_good_major_weight'] = (df['good_major_weight'] / df['total_true_weight']) * 100
             
             x = df[f'{param}_bin'].astype(str)
+
+            # Get left and right edges of each interval
+            left_edges = [interval.left for interval in df[f'{param}_bin']]
+            right_edges = [interval.right for interval in df[f'{param}_bin']]
+            midpoints = [(interval.left + interval.right) / 2 for interval in df[f'{param}_bin']]
+            horizontal_error = [(right - left) / 2 for left, right in zip(left_edges, right_edges)]
+
             # Plot track_efficiency
-            plt.figure()
+            plt.figure(figsize=(8, 5))
 
             
             #plt.plot(x, y, marker='o', color='black')
             # Add error bars
-            plt.errorbar(x, y, yerr=y_errors, fmt='o', color='black', capsize=5, linestyle='None', ecolor='black', alpha=0.7)
-            plt.fill_between(x, y, 0, where=(y >= 0), facecolor='blue', alpha=0.8)
-            plt.fill_between(x, y, 100, where=(y >= 0), facecolor='red', alpha=0.3)
-
+            plt.errorbar(midpoints, y, xerr=horizontal_error, label="model", fmt='o', color='black', capsize=0, capthick=1, elinewidth=1)
+            plt.errorbar(midpoints, y, xerr=horizontal_error, yerr=y_errors, label="model", fmt='o', color='black', capsize=3, capthick=1, elinewidth=1)
             plt.ylim(max(y.min() - 10, 0), 100)
             plt.title(f'Track Efficiency for {param}')
-            plt.xlabel(f'{param} Bins')
-            plt.ylabel('Efficiency (%)')
-            plt.xticks(rotation=45)
+            # Labels and legend
+            plt.ylabel("Efficiency")           
+            plt.xlabel(f'Particle {param}')
+            plt.ylabel('Efficiency')
+            plt.legend(loc="lower left")
             plt.tight_layout()
             self.log({f'{param}_track_efficiency': wandb.Image(plt)})
+            plt.grid(True, linestyle=':', color='gray', alpha=0.7)
             plt.close()
 
             # Plot track_fake_rate

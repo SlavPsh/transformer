@@ -204,7 +204,7 @@ def calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges):
     # Generate bin edges using numpy.arange
     # Create bins with -inf and inf for outer bins
     bins = {
-        param: np.concatenate([[-np.inf], np.arange(bin_ranges[param]['min'], bin_ranges[param]['max'] + bin_ranges[param]['step'], bin_ranges[param]['step']), [np.inf]])
+        param: np.arange(bin_ranges[param]['min'], bin_ranges[param]['max'] + bin_ranges[param]['step'], bin_ranges[param]['step'])
         for param in bin_params
     }
     #bins = {param: np.arange(bin_ranges[param]['min'], bin_ranges[param]['max'] + bin_ranges[param]['step'], bin_ranges[param]['step']) for param in bin_params}
