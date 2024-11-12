@@ -66,7 +66,7 @@ def load_model(config, device):
     model.eval()
     return model 
 
-def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_logger=None):
+def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_logger=None, device='cpu'):
     '''
     Evaluates the network on the test data. Returns the predictions and scores.
     '''
@@ -83,6 +83,7 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_lo
         # data is per event (becasue batch_size = 1)
         # Split the data for this event
         event_id, hits, hits_masking, track_params, track_labels = data
+        hits, hits_masking, track_params = hits.to(device), hits_masking.to(device), track_params.to(device), track_labels.to(device)
  
         # Make prediction
         padding_mask = (hits == PAD_TOKEN).all(dim=2)
@@ -120,9 +121,13 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_lo
                        **memory_stats
                        }
             wandb_logger.log(metrics)
+        
+        del hits, hits_masking, track_params, padding_mask, pred, track_labels
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
-        for _, e_id in enumerate(event_id):
-            predictions[e_id.item()] = (hits, pred, track_params, cluster_labels, track_labels, event_score)
+        #for _, e_id in enumerate(event_id):
+        #    predictions[e_id.item()] = (hits, pred, track_params, cluster_labels, track_labels, event_score)
 
     # Aggregate the bin scores across all events for each parameter
     aggregated_bin_scores = {}
@@ -135,7 +140,7 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, wandb_lo
 
     wandb_logger.plot_binned_scores(aggregated_bin_scores, total_average_score)
 
-    return predictions, total_average_score, total_average_edge_efficiency, perfects/len(test_loader), doubles/len(test_loader), lhcs/len(test_loader)
+    return total_average_score, total_average_edge_efficiency, perfects/len(test_loader), doubles/len(test_loader), lhcs/len(test_loader)
 
 def main(config_path):
         #Create unique run name
@@ -181,7 +186,7 @@ def main(config_path):
     cl_size = wandb.config.min_cl_size if 'min_cl_size' in wandb.config else 5
     min_sam = wandb.config.min_samples if 'min_samples' in wandb.config else 3
     bin_ranges = config['bin_ranges']
-    preds, score, edge_efficiency, perfect, double_maj, lhc = test_main(model, test_loader, cl_size, min_sam, bin_ranges, wandb_logger)
+    score, edge_efficiency, perfect, double_maj, lhc = test_main(model, test_loader, cl_size, min_sam, bin_ranges, wandb_logger)
     print(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}, Edge efficiency {edge_efficiency}', flush=True)
     logging.info(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}, Edge efficiency {edge_efficiency}')
     #print(perfect, double_maj, lhc, flush=True)
