@@ -202,6 +202,11 @@ def main(config_path):
     model, optimizer, loss_fn, start_epoch = setup_training(config, device)
     model.attach_wandb_logger(wandb_logger)
 
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logging.info(f"Total Trainable Parameters: {total_params}")
+    memory_stats = wandb_logger.get_system_memory_stats()
+    logging.info(f"Memory stats: {memory_stats}")
+
     logging.info("Started training and validation")
     if 'watch_interval' in config['wandb']:
         watch_interval = config['wandb']['watch_interval']
@@ -248,8 +253,7 @@ def main(config_path):
             break
     
     logging.info("Finished training")
-    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logging.info(f"Total Trainable Parameters: {total_params}")
+
     wandb_logger.finish()
 
 if __name__ == "__main__":
