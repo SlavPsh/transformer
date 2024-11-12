@@ -15,7 +15,7 @@ num_classes = 451
 
 
 [model]
-checkpoint_path = "/data/atlas/users/spshenov/trained_models/20241107_070732_aloof-capable-terrier_train/model_best.pth"
+checkpoint_path = "/data/atlas/users/spshenov/trained_models/models427epochs/model_trackml_10to50_best"
 # checkpoint_path = "/data/atlas/users/spshenov/trained_models/models427epochs/model_trackml_10to50_best"
 # checkpoint_path = "/data/atlas/users/spshenov/trained_models/20241104_120903_orthodox-elegant-bloodhound_train/model_best.pth"
 # trained model base "/data/atlas/users/spshenov/trained_models/20241107_070732_aloof-capable-terrier_train/model_best.pth"
@@ -60,9 +60,9 @@ values = [5]
 values = [3, 4]
 
 [bin_ranges.q]
-min = -1.5
-max = 1.5
-step = 1
+min = -2
+max = 2
+step = 2
 
 [bin_ranges.pt]
 min = 0
