@@ -240,6 +240,9 @@ def calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges):
         # Calculate the count of 'good' tracks in each bin
         good_predicted_count = good_grouped.size()
 
+        event_efficiency = good_predicted_count / total_true_count
+        event_fake_rate = (total_predicted_count - good_predicted_count) / total_predicted_count
+
         # Combine the results into a single DataFrame
         bin_scores = pd.DataFrame({
             'total_major_weight': total_major_weight,
@@ -247,7 +250,9 @@ def calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges):
             'total_true_weight': total_true_weight,
             'total_predicted_count': total_predicted_count,
             'good_predicted_count': good_predicted_count,
-            'total_true_count': total_true_count
+            'total_true_count': total_true_count,
+            'event_efficiency': event_efficiency,
+            'event_fake_rate': event_fake_rate
         }).reset_index()
 
         # Store the bin scores in the dictionary

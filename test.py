@@ -129,16 +129,10 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
         #for _, e_id in enumerate(event_id):
         #    predictions[e_id.item()] = (hits, pred, track_params, cluster_labels, track_labels, event_score)
 
-    # Aggregate the bin scores across all events for each parameter
-    aggregated_bin_scores = {}
-    for param in bin_ranges.keys():
-        all_bin_scores_df = pd.concat(combined_bin_scores[param])
-        aggregated_bin_scores[param] = all_bin_scores_df.groupby(f'{param}_bin', observed=False).sum().reset_index()
-
     total_average_score = score/len(test_loader)
     total_average_edge_efficiency = edge_efficiency/len(test_loader)
 
-    wandb_logger.plot_binned_scores(aggregated_bin_scores, total_average_score)
+    wandb_logger.plot_binned_scores(combined_bin_scores, bin_ranges, total_average_score)
 
     return total_average_score, total_average_edge_efficiency, perfects/len(test_loader), doubles/len(test_loader), lhcs/len(test_loader)
 
