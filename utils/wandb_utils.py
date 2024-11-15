@@ -116,7 +116,7 @@ class WandbLogger:
         
         # save the combined_bin_scores to a pickle file
         with open(os.path.join(self.output_dir, 'combined_bin_scores.pkl'), 'wb') as f:
-            pickle.dump(aggregated_bin_scores, f)
+            pickle.dump(combined_bin_scores, f)
 
         # Aggregate the bin scores across all events for each parameter
         aggregated_bin_scores = {}
