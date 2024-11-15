@@ -113,7 +113,10 @@ class WandbLogger:
             self.initialized = False
 
     def plot_binned_scores(self, combined_bin_scores, bin_ranges,  total_average_score):
-
+        
+        # save the combined_bin_scores to a pickle file
+        with open(os.path.join(self.output_dir, 'combined_bin_scores.pkl'), 'wb') as f:
+            pickle.dump(aggregated_bin_scores, f)
 
         # Aggregate the bin scores across all events for each parameter
         aggregated_bin_scores = {}
@@ -129,9 +132,7 @@ class WandbLogger:
                     'event_fake_rate': ['mean', 'std']  
                 }).reset_index()
 
-        # save the aggregated_bin_scores to a pickle file
-        with open(os.path.join(self.output_dir, 'aggregated_bin_scores.pkl'), 'wb') as f:
-            pickle.dump(aggregated_bin_scores, f)
+
 
         # Plot the percentage of good_major_weight over total_major_weight per bin and log to wandb
         for param, df in aggregated_bin_scores.items():
