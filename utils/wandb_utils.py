@@ -47,6 +47,11 @@ class WandbLogger:
         if not self.initialized:
             self.initialize()
         wandb.log(data)
+    
+    def alert(self, ttl, txt):
+        if not self.initialized:
+            self.initialize()
+        self.run.alert(title=ttl, text=txt)
 
     def get_system_memory_stats(self):
         # GPU memory stats (in MB)
@@ -191,7 +196,7 @@ class WandbLogger:
             # Add error bars
             plt.errorbar(midpoints, y, xerr=horizontal_error, fmt='o', color='black', capsize=0, capthick=1, elinewidth=1)
             plt.errorbar(midpoints, y, yerr=y_errors, label="EncReg", fmt='o', color='black', capsize=3, capthick=1, elinewidth=1)
-            plt.ylim(max(y.min() - 10, 0), 100)
+            plt.ylim(max(y.min() - 10, 0), min(y.max() + 10, 100))
             plt.title(f'Track Efficiency avg. for {param}')
             # Labels and legend
             plt.ylabel("Efficiency")           
@@ -219,7 +224,7 @@ class WandbLogger:
 
             plt.errorbar(midpoints, y, xerr=horizontal_error, fmt='o', color='black', capsize=0, capthick=1, elinewidth=1)
             plt.errorbar(midpoints, y, yerr=y_errors, label="EncReg", fmt='o', color='black', capsize=3, capthick=1, elinewidth=1)
-            plt.ylim(max(y.min() - 10, 0), min(y.max() + 20, 100))
+            plt.ylim(max(y.min() - 10, 0), min(y.max() + 10, 100))
             plt.title(f'Track Fake Rate for {param}')
             plt.xlabel(f'Particle {param}')
             plt.ylabel('Fake Rate (%)')
@@ -235,7 +240,7 @@ class WandbLogger:
 
             plt.errorbar(midpoints, y, xerr=horizontal_error, fmt='o', color='black', capsize=0, capthick=1, elinewidth=1)
             plt.errorbar(midpoints, y, yerr=y_errors, label="EncReg", fmt='o', color='black', capsize=3, capthick=1, elinewidth=1)
-            plt.ylim(max(y.min() - 10, 0), min(y.max() + 20, 100))
+            plt.ylim(max(y.min() - 10, 0), min(y.max() + 10, 100))
             plt.title(f'Track Fake Rate avg. for {param}')
             plt.xlabel(f'Particle {param}')
             plt.ylabel('Fake Rate (%)')
@@ -250,7 +255,7 @@ class WandbLogger:
             y = (df['good_major_weight']['sum'] / df['total_true_weight']['sum']) * 100
             plt.plot(midpoints, y, marker='o', color='black')
 
-            plt.ylim(max(y.min() - 10, 0) , 100)  # Set y-axis range for better resolution
+            plt.ylim(max(y.min() - 10, 0), min(y.max() + 10, 100))  # Set y-axis range for better resolution
             plt.title(f'Good Tracks Weight vs True Weight for {param}. Avg Score: {total_average_score*100:.1f}')
             plt.xlabel(f'Particle {param}')
             plt.ylabel('Percentage')

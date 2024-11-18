@@ -176,6 +176,8 @@ def main(config_path):
     model.attach_wandb_logger(wandb_logger)
 
     logging.info("Started evaluation")
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logging.info(f"Total Trainable Parameters: {total_params}")
 
     cl_size = wandb.config.min_cl_size if 'min_cl_size' in wandb.config else 5
     min_sam = wandb.config.min_samples if 'min_samples' in wandb.config else 3
@@ -186,9 +188,9 @@ def main(config_path):
     #print(perfect, double_maj, lhc, flush=True)
 
     wandb_logger.log({'total/cluster size' : cl_size, 'total/min sample size' : min_sam,'total/trackML score': score, 'total/edge_efficiency': edge_efficiency})
+
+    wandb_logger.alert("Finished test", "Finished test")
     
-    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logging.info(f"Total Trainable Parameters: {total_params}")
     wandb_logger.finish()
 
 

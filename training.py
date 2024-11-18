@@ -265,6 +265,7 @@ def main(config_path):
             break
     
     logging.info("Finished training")
+    wandb_logger.alert("Finished training", "Finished training")
 
     wandb_logger.finish()
 
