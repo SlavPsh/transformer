@@ -154,6 +154,7 @@ def main(config_path):
                                 job_type="evaluation")
     wandb_logger.initialize()
     logging.info(f'Loading config from {config_path} ')
+    logging.info(f'Description: {config['experiment']["description"]}')
     logging.info(f'Output_dir: {output_dir}')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Device: {device}')

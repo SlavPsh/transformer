@@ -1,7 +1,7 @@
 # Configuration toml
 [experiment]
 name = "Transformer with attention distance"
-description = "Training a model with attention distance mask"
+description = "..."
 
 [data]
 data_dir = "/data/atlas/users/spshenov/ml_input_data"
