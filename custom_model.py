@@ -1,11 +1,14 @@
 import torch
-import torch.nn as nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
 import numpy as np
 from hdbscan import HDBSCAN
 import logging
+from typing import Optional, Union, Callable, Tuple
+from torch.nn import Module, Linear, LayerNorm, Dropout, MultiheadAttention, TransformerEncoder
+from torch import Tensor
+import torch.nn.functional as F
 
-class TransformerRegressor(nn.Module):
+class TransformerRegressor(Module):
     '''
     A transformer network for clustering hits that belong to the same trajectory.
     Takes the hits (i.e 2D or 3D coordinates) and outputs the probability of each
@@ -13,11 +16,12 @@ class TransformerRegressor(nn.Module):
     '''
     def __init__(self, num_encoder_layers, d_model, n_head, input_size, output_size, dim_feedforward, dropout, use_att_mask=False, wandb_logger=None, use_flash_attention=False):
         super(TransformerRegressor, self).__init__()
-        self.input_layer = nn.Linear(input_size, d_model)
+        self.input_layer = Linear(input_size, d_model)
 
-        encoder_layers = nn.TransformerEncoderLayer(d_model, n_head, dim_feedforward, dropout, batch_first=True)
-        self.encoder = nn.TransformerEncoder(encoder_layers, num_encoder_layers, enable_nested_tensor=False)
-        self.decoder = nn.Linear(d_model, output_size)
+        
+        encoder_layers = CustomTransformerEncoderLayer(d_model, n_head, dim_feedforward, dropout, activation='relu', layer_norm_eps=1e-5, batch_first=True, norm_first=True, bias=True, device=None, dtype=None, return_attention=False, use_flash_attention=use_flash_attention)
+        self.encoder = TransformerEncoder(encoder_layers, num_encoder_layers, enable_nested_tensor=False)
+        self.decoder = Linear(d_model, output_size)
         self.num_heads = n_head
         self.att_mask_used = use_att_mask
         self.flash_attention = use_flash_attention
@@ -210,3 +214,174 @@ def calc_efficiency_purity(distance_mask, input_for_mask, padding_mask):
     purity = overlap / (attention_count + epsilon)
 
     return efficiency, purity
+
+
+class CustomTransformerEncoderLayer(Module):
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        dim_feedforward: int = 2048,
+        dropout: float = 0.1,
+        activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
+        layer_norm_eps: float = 1e-5,
+        batch_first: bool = False,
+        norm_first: bool = False,
+        bias: bool = True,
+        device=None,
+        dtype=None,
+        return_attention: bool = False,
+        use_flash_attention: bool = False,
+    ) -> None:
+        factory_kwargs = {"device": device, "dtype": dtype}
+        super().__init__()
+        self.self_attn = MultiheadAttention(
+            d_model,
+            nhead,
+            dropout=dropout,
+            bias=bias,
+            batch_first=batch_first,
+            **factory_kwargs,
+        )
+        self.return_attention = return_attention  # Flag to return attention matrix
+        self.use_flash_attention = use_flash_attention # Flag to use Flash Attention
+        self.attention_matrix = None   # Placeholder for attention matrix
+        
+        self.linear1 = Linear(d_model, dim_feedforward, bias=bias, **factory_kwargs)
+        self.dropout = Dropout(dropout)
+        self.linear2 = Linear(dim_feedforward, d_model, bias=bias, **factory_kwargs)
+
+        self.norm_first = norm_first
+        self.norm1 = LayerNorm(d_model, eps=layer_norm_eps, bias=bias, **factory_kwargs)
+        self.norm2 = LayerNorm(d_model, eps=layer_norm_eps, bias=bias, **factory_kwargs)
+        self.dropout1 = Dropout(dropout)
+        self.dropout2 = Dropout(dropout)
+
+        if isinstance(activation, str):
+            activation = _get_activation_fn(activation)
+        self.activation = activation
+
+    def forward(
+        self,
+        src: Tensor,
+        src_mask: Optional[Tensor] = None,
+        src_key_padding_mask: Optional[Tensor] = None,
+        is_causal: bool = False,
+    ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+        # Normalization and fast path checks removed for brevity
+        x = src
+        if self.norm_first:
+            x = x + self._sa_block(
+                self.norm1(x), src_mask, src_key_padding_mask, is_causal=is_causal
+            )
+            x = x + self._ff_block(self.norm2(x))
+        else:
+            x = self.norm1(
+                x
+                + self._sa_block(x, src_mask, src_key_padding_mask, is_causal=is_causal)
+            )
+            x = self.norm2(x + self._ff_block(x))
+
+        if self.return_attention:
+            return x, self.attention_matrix
+        return x
+
+    # self-attention block
+    def _sa_block(
+        self,
+        x: Tensor,
+        attn_mask: Optional[Tensor],
+        key_padding_mask: Optional[Tensor],
+        is_causal: bool = False,
+    ) -> Tensor:
+        need_att_weights = self.return_attention
+        attention_weights = None
+
+        if self.use_flash_attention:
+            # Utilize flash attention in both training and evaluation
+            try:
+                with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+                    if need_att_weights:
+                        output, attention_weights = self.self_attn(
+                            x,
+                            x,
+                            x,
+                            attn_mask=attn_mask,
+                            key_padding_mask=key_padding_mask,
+                            need_weights=True,
+                            average_attn_weights = True,
+                            is_causal=is_causal,
+                        )
+                    else:
+                        output = self.self_attn(
+                            x,
+                            x,
+                            x,
+                            attn_mask=attn_mask,
+                            key_padding_mask=key_padding_mask,
+                            need_weights=False, 
+                            is_causal=is_causal,
+                        )
+
+            except RuntimeError:
+                if need_att_weights:
+                    output, attention_weights = self.self_attn(
+                        x,
+                        x,
+                        x,
+                        attn_mask=attn_mask,
+                        key_padding_mask=key_padding_mask,
+                        need_weights=True,
+                        average_attn_weights = True,
+                        is_causal=is_causal,
+                    )
+                else:
+                    output = self.self_attn(
+                        x,
+                        x,
+                        x,
+                        attn_mask=attn_mask,
+                        key_padding_mask=key_padding_mask,
+                        need_weights=False, 
+                        is_causal=is_causal,
+                    )
+
+        else:
+            if need_att_weights:
+                output, attention_weights = self.self_attn(
+                    x,
+                    x,
+                    x,
+                    attn_mask=attn_mask,
+                    key_padding_mask=key_padding_mask,
+                    need_weights=True,
+                    average_attn_weights = True,
+                    is_causal=is_causal,
+                )
+            else:
+                output = self.self_attn(
+                    x,
+                    x,
+                    x,
+                    attn_mask=attn_mask,
+                    key_padding_mask=key_padding_mask,
+                    need_weights=False, 
+                    is_causal=is_causal,
+                )
+
+        self.attention_matrix = attention_weights
+
+        return self.dropout1(output)
+
+    # feed forward block
+    def _ff_block(self, x: Tensor) -> Tensor:
+        x = self.linear2(self.dropout(self.activation(self.linear1(x))))
+        return self.dropout2(x)
+    
+def _get_activation_fn(activation: str) -> Callable[[Tensor], Tensor]:
+    if activation == "relu":
+        return F.relu
+    elif activation == "gelu":
+        return F.gelu
+
+    raise RuntimeError(f"activation should be relu/gelu, not {activation}")
