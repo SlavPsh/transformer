@@ -112,7 +112,7 @@ class WandbLogger:
             wandb.finish()
             self.initialized = False
 
-    def plot_binned_scores(self, combined_bin_scores, bin_ranges,  total_average_score):
+    def plot_binned_scores(self, combined_bin_scores, total_average_score):
         
         # save the combined_bin_scores to a pickle file
         with open(os.path.join(self.output_dir, 'combined_bin_scores.pkl'), 'wb') as f:
@@ -120,7 +120,7 @@ class WandbLogger:
 
         # Aggregate the bin scores across all events for each parameter
         aggregated_bin_scores = {}
-        for param in bin_ranges.keys():
+        for param in combined_bin_scores.keys():
             all_bin_scores_df = pd.concat(combined_bin_scores[param])
             aggregated_bin_scores[param] = all_bin_scores_df.groupby(f'{param}_bin', observed=False).agg({
                     'good_predicted_count': 'sum',  

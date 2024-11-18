@@ -132,7 +132,7 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
     total_average_score = score/len(test_loader)
     total_average_edge_efficiency = edge_efficiency/len(test_loader)
 
-    wandb_logger.plot_binned_scores(combined_bin_scores, bin_ranges, total_average_score)
+    wandb_logger.plot_binned_scores(combined_bin_scores, total_average_score)
 
     return total_average_score, total_average_edge_efficiency, perfects/len(test_loader), doubles/len(test_loader), lhcs/len(test_loader)
 
