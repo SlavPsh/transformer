@@ -96,6 +96,7 @@ def _analyze_tracks(truth, submission):
         maj_particle_id = cur_particle_id
         maj_nhits = cur_nhits
         maj_weight = cur_weight
+
     # store values for the last track
     tracks.append((rec_track_id, rec_nhits, maj_particle_id,
         particles_nhits[maj_particle_id], maj_nhits, maj_weight / total_weight))
