@@ -190,7 +190,7 @@ def main(config_path):
     # Log the configuration
     logging.info(f'Loading config from {config_path} ')
     logging.info(f'Output_dir: {output_dir}')
-    logging.info(f'Description: {config['experiment']["description"]}')
+    logging.info(f"Description: {config['experiment']['description']}")
     early_stopping_epoch = config['training']['early_stopping']['patience']
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
