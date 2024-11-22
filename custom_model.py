@@ -361,7 +361,10 @@ class CustomTransformerEncoderLayer(Module):
         need_att_weights = self.return_attention
 
         if self.use_flash_attention:
-            # Utilize flash attention in both training and evaluation
+            # Utilize flash attention 
+            # Note: Flash Attention is not supported on all devices
+            # If the device does not support Flash Attention, the code will fall back to the default PyTorch implementation
+            # need_weights is set to False for Flash Attention to avoid errors
             try:
                 with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
                     output = self.self_attn(
@@ -370,8 +373,7 @@ class CustomTransformerEncoderLayer(Module):
                         x,
                         attn_mask=attn_mask,
                         key_padding_mask=key_padding_mask,
-                        need_weights=need_att_weights, 
-                        average_attn_weights = True,
+                        need_weights=False, 
                         is_causal=is_causal,
                     )
 
@@ -382,8 +384,7 @@ class CustomTransformerEncoderLayer(Module):
                     x,
                     attn_mask=attn_mask,
                     key_padding_mask=key_padding_mask,
-                    need_weights=need_att_weights, 
-                    average_attn_weights = True,
+                    need_weights=False, 
                     is_causal=is_causal,
                 )
         else:
