@@ -137,14 +137,18 @@ class CustomTransformerRegressor(Module):
             
             expanded_mask = distance_mask.unsqueeze(1).expand(batch_size, num_heads, seq_len, seq_len).reshape(batch_size * num_heads, seq_len, seq_len)
         
-        if return_attention_from_layer is not None:
-            self.encoder.layers[return_attention_from_layer].set_return_attention(True)
+        if self.flash_attention:
+            # Cannot use attn mask and return attention from layer with Flash Attention
+            memory = self.encoder(src=x, src_key_padding_mask=padding_mask)
+        else:
+            if return_attention_from_layer is not None:
+                self.encoder.layers[return_attention_from_layer].set_return_attention(True)
 
-        memory = self.encoder(src=x, src_key_padding_mask=padding_mask, mask=expanded_mask)
+            memory = self.encoder(src=x, src_key_padding_mask=padding_mask, mask=expanded_mask)
 
-        if return_attention_from_layer is not None:
-            attention_matrix = self.encoder.layers[return_attention_from_layer].get_attention_matrix()
-            self.encoder.layers[return_attention_from_layer].set_return_attention(False)    
+            if return_attention_from_layer is not None:
+                attention_matrix = self.encoder.layers[return_attention_from_layer].get_attention_matrix()
+                self.encoder.layers[return_attention_from_layer].set_return_attention(False)    
         # Regularization of the output for stability of clustering algorithm
         if torch.isnan(memory).any(): 
             logging.error("Memory contains NaN values. Check attention mask.")
@@ -377,7 +381,8 @@ class CustomTransformerEncoderLayer(Module):
                         is_causal=is_causal,
                     )
 
-            except RuntimeError:
+            except RuntimeError as e:
+                logging.error(f"An error occurred when applying Flash attention : {e}")
                 output = self.self_attn(
                     x,
                     x,
