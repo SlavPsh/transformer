@@ -3,24 +3,84 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 import numpy as np
 from hdbscan import HDBSCAN
 import logging
+import copy
 from typing import Optional, Union, Callable, Tuple
-from torch.nn import Module, Linear, LayerNorm, Dropout, MultiheadAttention, TransformerEncoder
+#from torch.nn import TransformerEncoder
+from torch.nn.modules.activation import MultiheadAttention
+from torch.nn.modules.container import ModuleList
+from torch.nn.modules.linear import Linear
+from torch.nn.modules.module import Module
+from torch.nn.modules.dropout import Dropout
+from torch.nn.modules.normalization import LayerNorm
+
 from torch import Tensor
 import torch.nn.functional as F
 
-class TransformerRegressor(Module):
+class CustomTransformerEncoder(Module):
+    """
+    TransformerEncoder is a stack of N encoder layers.
+
+    Args:
+        encoder_layer: an instance of TransformerEncoderLayer (required).
+        num_layers: number of sub-encoder layers in the encoder (required).
+        norm: optional layer normalization at the output (default=None).
+    """
+
+    def __init__(
+        self,
+        encoder_layer: "TransformerEncoderLayer",
+        num_layers: int,
+        norm: Optional[Module] = None,
+    ) -> None:
+        super().__init__()
+        self.layers = _get_clones(encoder_layer, num_layers)
+        self.num_layers = num_layers
+        self.norm = norm
+
+    def forward(
+        self,
+        src: Tensor,
+        mask: Optional[Tensor] = None,
+        src_key_padding_mask: Optional[Tensor] = None,
+        is_causal: Optional[bool] = None,
+    ) -> Tensor:
+        """
+        Passes the input through each encoder layer.
+
+        Args:
+            src: input sequence (batch_size, seq_len, d_model).
+            mask: optional attention mask (seq_len, seq_len).
+            src_key_padding_mask: optional padding mask (batch_size, seq_len).
+            is_causal: if True, applies causal masking (default=None).
+
+        Returns:
+            Encoded output (batch_size, seq_len, d_model).
+        """
+        output = src
+        for layer in self.layers:
+            output = layer(
+                output,
+                src_mask=mask,
+                src_key_padding_mask=src_key_padding_mask,
+                is_causal=is_causal,
+            )
+        if self.norm is not None:
+            output = self.norm(output)
+        return output
+
+class CustomTransformerRegressor(Module):
     '''
     A transformer network for clustering hits that belong to the same trajectory.
     Takes the hits (i.e 2D or 3D coordinates) and outputs the probability of each
     hit belonging to each of the 20 possible tracks (classes).
     '''
     def __init__(self, num_encoder_layers, d_model, n_head, input_size, output_size, dim_feedforward, dropout, use_att_mask=False, wandb_logger=None, use_flash_attention=False):
-        super(TransformerRegressor, self).__init__()
+        super(CustomTransformerRegressor, self).__init__()
         self.input_layer = Linear(input_size, d_model)
 
         
-        encoder_layers = CustomTransformerEncoderLayer(d_model, n_head, dim_feedforward, dropout, activation='relu', layer_norm_eps=1e-5, batch_first=True, norm_first=True, bias=True, device=None, dtype=None, return_attention=False, use_flash_attention=use_flash_attention)
-        self.encoder = TransformerEncoder(encoder_layers, num_encoder_layers, enable_nested_tensor=False)
+        encoder_layers = CustomTransformerEncoderLayer(d_model, n_head, dim_feedforward, dropout, batch_first=True, use_flash_attention=use_flash_attention)
+        self.encoder = CustomTransformerEncoder(encoder_layers, num_encoder_layers)
         self.decoder = Linear(d_model, output_size)
         self.num_heads = n_head
         self.att_mask_used = use_att_mask
@@ -39,15 +99,19 @@ class TransformerRegressor(Module):
         out = self.decoder(memory)
         return out
     """
+    
     def attach_wandb_logger(self, wandb_logger):
         self.wandb_logger = wandb_logger
         
     def set_use_att_mask(self, use_att_mask):
         self.att_mask_used = use_att_mask
     
-    def forward(self, input_coord, input_for_mask, padding_mask):
+    def forward(self, input_coord, input_for_mask, padding_mask, return_attention_from_layer=None):
         # Here we use only 3 coordinates x,y,z as input to the model
         x = self.input_layer(input_coord)  # Transform coordinates part of the input into d_model space
+
+        expanded_mask = None
+        attention_matrix = None
 
         if self.att_mask_used:
             batch_size, seq_len, _ = x.size()
@@ -72,26 +136,21 @@ class TransformerRegressor(Module):
             #    self.save_to_file = False
             
             expanded_mask = distance_mask.unsqueeze(1).expand(batch_size, num_heads, seq_len, seq_len).reshape(batch_size * num_heads, seq_len, seq_len)
+        
+        if return_attention_from_layer is not None:
+            self.encoder.layers[return_attention_from_layer].set_return_attention(True)
 
-            # Apply the distance mask to the attention mechanism
-             # Enable Flash Attention and apply to encoder
-            if self.flash_attention:
-                with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-                    memory = self.encoder(x, mask=expanded_mask, src_key_padding_mask=padding_mask)
-            else:
-                memory = self.encoder(src=x, src_key_padding_mask=padding_mask, mask=expanded_mask)
-        else:
-            if self.flash_attention:
-                with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-                    memory = self.encoder(src=x, src_key_padding_mask=padding_mask)
-            else:
-                memory = self.encoder(src=x, src_key_padding_mask=padding_mask)
+        memory = self.encoder(src=x, src_key_padding_mask=padding_mask, mask=expanded_mask)
 
+        if return_attention_from_layer is not None:
+            attention_matrix = self.encoder.layers[return_attention_from_layer].get_attention_matrix()
+            self.encoder.layers[return_attention_from_layer].set_return_attention(False)    
         # Regularization of the output for stability of clustering algorithm
         if torch.isnan(memory).any(): 
             logging.error("Memory contains NaN values. Check attention mask.")
         out = self.decoder(memory)
         return out
+    
     
     def calculate_distance_mask(self, input_for_mask, padding_mask, z_0_limit = 197.4, phi_r_ratio_limit = 0.001825, angular_separation_limit = 1.797):
         # Calculate the distance mask based on the input
@@ -160,7 +219,7 @@ class TransformerRegressor(Module):
 
         return mask  # Shape: [batch_size, seq_len, seq_len]
     
-def clustering(pred_params, min_cl_size, min_samples):
+def custom_clustering(pred_params, min_cl_size, min_samples):
     '''
     Function to perform HDBSCAN on the predicted track parameters, with specified
     HDBSCAN hyperparameters. Returns the associated cluster IDs.
@@ -230,7 +289,6 @@ class CustomTransformerEncoderLayer(Module):
         bias: bool = True,
         device=None,
         dtype=None,
-        return_attention: bool = False,
         use_flash_attention: bool = False,
     ) -> None:
         factory_kwargs = {"device": device, "dtype": dtype}
@@ -243,9 +301,10 @@ class CustomTransformerEncoderLayer(Module):
             batch_first=batch_first,
             **factory_kwargs,
         )
-        self.return_attention = return_attention  # Flag to return attention matrix
+
+        self.return_attention = False
         self.use_flash_attention = use_flash_attention # Flag to use Flash Attention
-        self.attention_matrix = None   # Placeholder for attention matrix
+        self.attention_matrix = None
         
         self.linear1 = Linear(d_model, dim_feedforward, bias=bias, **factory_kwargs)
         self.dropout = Dropout(dropout)
@@ -260,6 +319,12 @@ class CustomTransformerEncoderLayer(Module):
         if isinstance(activation, str):
             activation = _get_activation_fn(activation)
         self.activation = activation
+    
+    def get_attention_matrix(self):
+        return self.attention_matrix
+    
+    def set_return_attention(self, return_attention: bool):
+        self.return_attention = return_attention
 
     def forward(
         self,
@@ -268,6 +333,7 @@ class CustomTransformerEncoderLayer(Module):
         src_key_padding_mask: Optional[Tensor] = None,
         is_causal: bool = False,
     ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+
         # Normalization and fast path checks removed for brevity
         x = src
         if self.norm_first:
@@ -282,8 +348,6 @@ class CustomTransformerEncoderLayer(Module):
             )
             x = self.norm2(x + self._ff_block(x))
 
-        if self.return_attention:
-            return x, self.attention_matrix
         return x
 
     # self-attention block
@@ -295,83 +359,48 @@ class CustomTransformerEncoderLayer(Module):
         is_causal: bool = False,
     ) -> Tensor:
         need_att_weights = self.return_attention
-        attention_weights = None
 
         if self.use_flash_attention:
             # Utilize flash attention in both training and evaluation
             try:
                 with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-                    if need_att_weights:
-                        output, attention_weights = self.self_attn(
-                            x,
-                            x,
-                            x,
-                            attn_mask=attn_mask,
-                            key_padding_mask=key_padding_mask,
-                            need_weights=True,
-                            average_attn_weights = True,
-                            is_causal=is_causal,
-                        )
-                    else:
-                        output = self.self_attn(
-                            x,
-                            x,
-                            x,
-                            attn_mask=attn_mask,
-                            key_padding_mask=key_padding_mask,
-                            need_weights=False, 
-                            is_causal=is_causal,
-                        )
-
-            except RuntimeError:
-                if need_att_weights:
-                    output, attention_weights = self.self_attn(
-                        x,
-                        x,
-                        x,
-                        attn_mask=attn_mask,
-                        key_padding_mask=key_padding_mask,
-                        need_weights=True,
-                        average_attn_weights = True,
-                        is_causal=is_causal,
-                    )
-                else:
                     output = self.self_attn(
                         x,
                         x,
                         x,
                         attn_mask=attn_mask,
                         key_padding_mask=key_padding_mask,
-                        need_weights=False, 
+                        need_weights=need_att_weights, 
+                        average_attn_weights = True,
                         is_causal=is_causal,
                     )
 
-        else:
-            if need_att_weights:
-                output, attention_weights = self.self_attn(
-                    x,
-                    x,
-                    x,
-                    attn_mask=attn_mask,
-                    key_padding_mask=key_padding_mask,
-                    need_weights=True,
-                    average_attn_weights = True,
-                    is_causal=is_causal,
-                )
-            else:
+            except RuntimeError:
                 output = self.self_attn(
                     x,
                     x,
                     x,
                     attn_mask=attn_mask,
                     key_padding_mask=key_padding_mask,
-                    need_weights=False, 
+                    need_weights=need_att_weights, 
+                    average_attn_weights = True,
                     is_causal=is_causal,
                 )
+        else:
+            output = self.self_attn(
+                x,
+                x,
+                x,
+                attn_mask=attn_mask,
+                key_padding_mask=key_padding_mask,
+                need_weights=need_att_weights, 
+                average_attn_weights = True,
+                is_causal=is_causal,
+            )
 
-        self.attention_matrix = attention_weights
+        self.attention_matrix = output[1]
 
-        return self.dropout1(output)
+        return self.dropout1(output[0])
 
     # feed forward block
     def _ff_block(self, x: Tensor) -> Tensor:
@@ -385,3 +414,7 @@ def _get_activation_fn(activation: str) -> Callable[[Tensor], Tensor]:
         return F.gelu
 
     raise RuntimeError(f"activation should be relu/gelu, not {activation}")
+
+def _get_clones(module, N):
+    # FIXME: copy.deepcopy() is not defined on nn.module
+    return ModuleList([copy.deepcopy(module) for i in range(N)])

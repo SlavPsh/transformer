@@ -14,6 +14,7 @@ from time import gmtime, strftime
 from coolname import generate_slug
 
 from model import TransformerRegressor
+from custom_model import CustomTransformerRegressor
 
 from data_processing.dataset import HitsDataset, PAD_TOKEN, get_dataloaders
 
@@ -32,7 +33,7 @@ def setup_training(config, device):
     sweep_flash_attention = wandb.config.use_flash_attention if 'use_flash_attention' in wandb.config else config_flash_attention
 
     # model
-    model = TransformerRegressor(
+    model = CustomTransformerRegressor(
         num_encoder_layers = config['model']['num_encoder_layers'],
         d_model = config['model']['d_model'],
         n_head=config['model']['n_head'],

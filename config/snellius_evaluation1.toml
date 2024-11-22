@@ -1,7 +1,7 @@
 # example toml
 [experiment]
 name = "Transformer with attention distance"
-description = "..."
+description = "Trying base 10-50 model on vertices data 2-10"
 
 [data]
 data_dir = "/data/atlas/users/spshenov/ml_input_data"
@@ -9,11 +9,14 @@ data_dir = "/data/atlas/users/spshenov/ml_input_data"
 # trackml_short_10to50_tracks_5k_events.csv
 # trackml_10to50tracks_40kevents.csv
 # trackml_200to500tracks_40kevents.csv
-data_file = "trackml_tiny_10to50tracks_100events.csv"
+# trackml_2to10vertices.csv
+data_file = "trackml_2to10vertices_new2.csv"
+dataloader_num_workers = 4
+num_classes = 451
 
 
 [model]
-checkpoint_path = "/data/atlas/users/spshenov/studio/trained_models/20241119_161948_wooden-watchful-snake_train/model_best.pth"
+checkpoint_path = "/data/atlas/users/spshenov/trained_models/models427epochs/model_trackml_10to50_best"
 # checkpoint_path = "/data/atlas/users/spshenov/trained_models/models427epochs/model_trackml_10to50_best"
 # checkpoint_path = "/data/atlas/users/spshenov/trained_models/20241104_120903_orthodox-elegant-bloodhound_train/model_best.pth"
 # trained model base "/data/atlas/users/spshenov/trained_models/20241107_070732_aloof-capable-terrier_train/model_best.pth"
@@ -28,13 +31,11 @@ dropout = 0.1
 use_flash_attention = false
 use_att_mask = false
 
-
 [training]
 batch_size = 64
 
-
 [output]
-base_path = "/data/atlas/users/spshenov/studio/evaluation"
+base_path = "/data/atlas/users/spshenov/evaluation"
 
 [logging]
 level = "INFO"
@@ -57,12 +58,12 @@ values = [false]
 values = [5]
 
 [sweep.parameters.min_samples]
-values = [3]
+values = [3, 4]
 
 [bin_ranges.q]
-min = -1.5
-max = 1.5
-step = 1
+min = -2
+max = 2
+step = 2
 
 [bin_ranges.pt]
 min = 0

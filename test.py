@@ -1,5 +1,6 @@
 import torch
 from model import TransformerRegressor, clustering
+#from custom_model import CustomTransformerRegressor, custom_clustering
 from data_processing.dataset import HitsDataset, get_dataloaders
 from data_processing.dataset import load_trackml_data, PAD_TOKEN
 from evaluation.scoring import calc_score_trackml, calculate_bined_scores, calc_edge_efficiency

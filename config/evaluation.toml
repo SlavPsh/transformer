@@ -10,7 +10,7 @@ data_dir = "/data/atlas/users/spshenov/ml_input_data"
 # trackml_10to50tracks_40kevents.csv
 # trackml_200to500tracks_40kevents.csv
 # trackml_2to10vertices.csv
-data_file = "trackml_2to10vertices_new2.csv"
+data_file = "trackml_10to50tracks_40kevents.csv"
 dataloader_num_workers = 4
 num_classes = 451
 
