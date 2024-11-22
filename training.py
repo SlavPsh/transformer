@@ -68,7 +68,7 @@ def setup_training(config, device):
             
             if 'use_att_mask' in checkpoint:
                 model.set_use_att_mask(checkpoint['use_att_mask'])
-                logging.info(f'Using attention mask is set to  {checkpoint['use_att_mask']}')
+                logging.info(f"Using attention mask is set to  {checkpoint['use_att_mask']}")
             else:
                 model.set_use_att_mask(False)
                 logging.info(f'Using attention mask is set to False')

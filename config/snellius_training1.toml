@@ -4,7 +4,7 @@ name = "Transformer with attention distance"
 description = "Training model on vertex data"
 
 [data]
-data_dir = "/data/atlas/users/spshenov/ml_input_data"
+data_dir = "/projects/0/nisei0750/slava/data/ml_input_data"
 # trackml_tiny_10to50tracks_100events.csv
 # trackml_short_10to50_tracks_5k_events.csv
 # trackml_10to50tracks_40kevents.csv
@@ -34,7 +34,7 @@ default_lr = 1e-3
 patience = 100
 
 [output]
-base_path = "/data/atlas/users/spshenov/trained_models"
+base_path = "/projects/0/nisei0750/slava/data/trained_models"
 
 [logging]
 level = "INFO"
