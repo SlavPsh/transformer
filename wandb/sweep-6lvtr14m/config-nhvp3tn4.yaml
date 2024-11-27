@@ -1,0 +1,4 @@
+wandb_version: 1
+
+use_att_mask:
+  value: true
