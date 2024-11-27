@@ -184,6 +184,7 @@ def main(config_path):
     cl_size = wandb.config.min_cl_size if 'min_cl_size' in wandb.config else 5
     min_sam = wandb.config.min_samples if 'min_samples' in wandb.config else 3
     bin_ranges = config['bin_ranges']
+
     score, edge_efficiency, perfect, double_maj, lhc = test_main(model, test_loader, cl_size, min_sam, bin_ranges, device, wandb_logger)
     print(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}, Edge efficiency {edge_efficiency}', flush=True)
     logging.info(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}, Edge efficiency {edge_efficiency}')
