@@ -20,11 +20,11 @@ class HitsDataset(Dataset):
     def __getitem__(self, idx):
         return idx, self.hits_data[idx], self.hits_masking[idx], self.track_params_data[idx], self.particle_data[idx]
 
-def get_dataloaders(dataset, train_frac, valid_frac, test_frac, batch_size):
+def get_dataloaders(dataset, train_frac, valid_frac, test_frac, batch_size, drop_last=False):
     train_set, valid_set, test_set = random_split(dataset, [train_frac, valid_frac, test_frac], generator=torch.Generator().manual_seed(37))
 
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=False)
-    valid_loader = DataLoader(valid_set, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=False, drop_last=drop_last)
+    valid_loader = DataLoader(valid_set, batch_size=batch_size, shuffle=False, drop_last=drop_last)
     test_loader = DataLoader(test_set, batch_size=1, shuffle=False)
 
     return train_loader, valid_loader, test_loader

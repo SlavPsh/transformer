@@ -13,8 +13,9 @@ import os, sys
 from time import gmtime, strftime
 from coolname import generate_slug
 
-from model import TransformerRegressor
-from flex_attn_model import CustomTransformerRegressor
+#from model import TransformerRegressor
+#from fa_model import TransformerRegressor
+from flex_attn_model import TransformerRegressor
 
 from data_processing.dataset import HitsDataset, PAD_TOKEN, get_dataloaders
 
@@ -33,7 +34,7 @@ def setup_training(config, device):
     sweep_flash_attention = wandb.config.use_flash_attention if 'use_flash_attention' in wandb.config else config_flash_attention
 
     # model
-    model = CustomTransformerRegressor(
+    model = TransformerRegressor(
         num_encoder_layers = config['model']['num_encoder_layers'],
         d_model = config['model']['d_model'],
         n_head=config['model']['n_head'],
@@ -100,7 +101,8 @@ def train_epoch(model, optim, train_loader, loss_fn, device):
         hits, hits_masking, track_params = hits.to(device), hits_masking.to(device), track_params.to(device)
         # Make prediction
         padding_mask = (hits == PAD_TOKEN).all(dim=2)
-        pred = model(hits, hits_masking, padding_mask)
+        
+        pred = model(hits, padding_mask)
 
         pred = torch.unsqueeze(pred[~padding_mask], 0)
         track_params = torch.unsqueeze(track_params[~padding_mask], 0)
@@ -136,7 +138,7 @@ def evaluate(model, validation_loader, loss_fn, device):
             hits, hits_masking, track_params = hits.to(device), hits_masking.to(device), track_params.to(device)
             # Make prediction
             padding_mask = (hits == PAD_TOKEN).all(dim=2)
-            pred = model(hits, hits_masking, padding_mask)
+            pred = model(hits, padding_mask)
 
             pred = torch.unsqueeze(pred[~padding_mask], 0)
             track_params = torch.unsqueeze(track_params[~padding_mask], 0)
@@ -203,11 +205,13 @@ def main(config_path):
     logging.info(f'Loading data from {data_path} ...')
     hits_data, hits_masking, track_params_data, track_classes_data = load_trackml_data(data=data_path)
     dataset = HitsDataset(hits_data, hits_masking, track_params_data, track_classes_data)
+
+    batch_size = config['training']['batch_size']
     train_loader, valid_loader, _ = get_dataloaders(dataset,
                                                               train_frac=0.7,
                                                               valid_frac=0.15,
                                                               test_frac=0.15,
-                                                              batch_size=64)
+                                                              batch_size=batch_size, drop_last=True)
     logging.info(f'Data loaded.')
 
     config

@@ -69,14 +69,14 @@ class CustomTransformerEncoder(Module):
             output = self.norm(output)
         return output
 
-class CustomTransformerRegressor(Module):
+class TransformerRegressor(Module):
     '''
     A transformer network for clustering hits that belong to the same trajectory.
     Takes the hits (i.e 2D or 3D coordinates) and outputs the probability of each
     hit belonging to each of the 20 possible tracks (classes).
     '''
     def __init__(self, num_encoder_layers, d_model, n_head, input_size, output_size, dim_feedforward, dropout, use_att_mask=False, wandb_logger=None, use_flash_attention=False):
-        super(CustomTransformerRegressor, self).__init__()
+        super(TransformerRegressor, self).__init__()
         self.input_layer = Linear(input_size, d_model)
 
         
