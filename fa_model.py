@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
 import numpy as np
 from hdbscan import HDBSCAN
@@ -24,7 +25,7 @@ from torch.nn.attention.flex_attention import (
 )
 
 
-class MultiheadFlexAttention(nn.Module):
+class MultiheadFlexAttention(Module):
     def __init__(
         self,
         embed_dim,
