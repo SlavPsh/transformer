@@ -14,7 +14,7 @@ from time import gmtime, strftime
 from coolname import generate_slug
 
 from model import TransformerRegressor
-from custom_model import CustomTransformerRegressor
+from flex_attn_model import CustomTransformerRegressor
 
 from data_processing.dataset import HitsDataset, PAD_TOKEN, get_dataloaders
 

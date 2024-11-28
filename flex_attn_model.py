@@ -1,13 +1,13 @@
 import torch
 import torch.nn as nn
-from torch.nn.attention import SDPBackend, sdpa_kernel
+
 import numpy as np
 from hdbscan import HDBSCAN
 import logging
 import copy
 from typing import Optional, Union, Callable, Tuple
 #from torch.nn import TransformerEncoder
-from torch.nn.modules.activation import MultiheadAttention
+
 from torch.nn.modules.container import ModuleList
 from torch.nn.modules.linear import Linear
 from torch.nn.modules.module import Module
@@ -439,49 +439,13 @@ class CustomTransformerEncoderLayer(Module):
         key_padding_mask: Optional[Tensor],
         is_causal: bool = False,
     ) -> Tensor:
-        need_att_weights = self.return_attention
 
-        if self.use_flash_attention:
-            # Utilize flash attention 
-            # Note: Flash Attention is not supported on all devices
-            # If the device does not support Flash Attention, the code will fall back to the default PyTorch implementation
-            # need_weights is set to False for Flash Attention to avoid errors
-            try:
-                with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-                    output = self.self_attn(
-                        x,
-                        x,
-                        x,
-                        attn_mask=attn_mask,
-                        key_padding_mask=key_padding_mask,
-                        need_weights=False, 
-                        is_causal=is_causal,
-                    )
 
-            except RuntimeError as e:
-                logging.error(f"An error occurred when applying Flash attention : {e}")
-                output = self.self_attn(
-                    x,
-                    x,
-                    x,
-                    attn_mask=attn_mask,
-                    key_padding_mask=key_padding_mask,
-                    need_weights=False, 
-                    is_causal=is_causal,
-                )
-        else:
-            output = self.self_attn(
-                x,
-                x,
-                x,
-                attn_mask=attn_mask,
-                key_padding_mask=key_padding_mask,
-                need_weights=need_att_weights, 
-                average_attn_weights = True,
-                is_causal=is_causal,
-            )
-
-        self.attention_matrix = output[1]
+        output = self.self_attn(
+            x,
+            x,
+            x
+        )
 
         return self.dropout1(output[0])
 
