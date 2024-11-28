@@ -16,6 +16,82 @@ from torch.nn.modules.normalization import LayerNorm
 from torch import Tensor
 import torch.nn.functional as F
 
+from torch.nn.attention.flex_attention import (
+    _DEFAULT_SPARSE_BLOCK_SIZE,
+    create_block_mask,
+    create_mask,
+    flex_attention,
+)
+
+
+class MultiheadFlexAttention(nn.Module):
+    def __init__(
+        self,
+        embed_dim,
+        num_heads,
+        dropout=0.0,
+        bias=True,
+        batch_first=False,
+        score_mod=None,
+        **factory_kwargs,
+    ):
+        super(MultiheadFlexAttention, self).__init__()
+
+        if embed_dim % num_heads != 0:
+            raise ValueError("embed_dim must be divisible by num_heads")
+
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.batch_first = batch_first
+        self.score_mod = score_mod  # Custom scoring modification function
+
+        # Learnable linear layers for Q, K, V projections
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias, **factory_kwargs)
+        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=bias, **factory_kwargs)
+        self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias, **factory_kwargs)
+
+        # Output projection
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias, **factory_kwargs)
+
+        # Dropout
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, query, key, value, attn_mask=None, key_padding_mask=None):
+        # Shape checks
+        if self.batch_first:
+            query, key, value = query.transpose(0, 1), key.transpose(0, 1), value.transpose(0, 1)
+
+        batch_size, seq_len, embed_dim = query.size()
+        if embed_dim != self.embed_dim:
+            raise ValueError(f"Expected embed_dim={self.embed_dim}, but got {embed_dim}")
+
+        # Linear projections
+        query = self.q_proj(query)
+        key = self.k_proj(key)
+        value = self.v_proj(value)
+
+        # Reshape for multi-head
+        query = query.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        key = key.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        value = value.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+        # Apply custom flex attention
+        attn_output = flex_attention(query, key, value, score_mod=self.score_mod)
+
+        # Concatenate heads
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.embed_dim)
+
+        # Final linear projection
+        attn_output = self.out_proj(attn_output)
+        attn_output = self.dropout(attn_output)
+
+        # If batch_first, convert back
+        if self.batch_first:
+            attn_output = attn_output.transpose(0, 1)
+
+        return attn_output
+
 class CustomTransformerEncoder(Module):
     """
     TransformerEncoder is a stack of N encoder layers.
@@ -297,7 +373,7 @@ class CustomTransformerEncoderLayer(Module):
     ) -> None:
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
-        self.self_attn = MultiheadAttention(
+        self.self_attn = MultiheadFlexAttention(
             d_model,
             nhead,
             dropout=dropout,

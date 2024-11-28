@@ -3,6 +3,10 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from xformers.ops import memory_efficient_attention
 
+import logging
+
+
+
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -108,6 +112,22 @@ class SimpleTransformer(nn.Module):
         x = self.output_layer(x)  # Regression output per point
         return x
 
+
+# Create logger
+logger = logging.getLogger('my_logger')
+logger.setLevel(logging.INFO)
+
+# File handler
+file_handler = logging.FileHandler('tiny_log_file.log')
+file_handler.setLevel(logging.INFO)
+
+# Format for the logs
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+
+# Add handlers to the logger
+logger.addHandler(file_handler)
+
 # Instantiate the model
 model = SimpleTransformer(input_dim=3, d_model=8, nhead=1, dim_feedforward=16, num_layers=1, num_targets=num_targets).to(device)
 
@@ -145,6 +165,6 @@ for epoch in range(2):  # Small number of epochs for demonstration
         loss.backward()
         optimizer.step()
 
-    print(f"Epoch {epoch + 1}, Loss: {loss.item()}")
+    logger.info(f"Epoch {epoch + 1}, Loss: {loss.item()}")
 
-print("Training complete!")
+logger.info("Training complete!")
