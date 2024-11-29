@@ -1,5 +1,6 @@
 import torch
-from model import TransformerRegressor, clustering
+#from model import TransformerRegressor, clustering
+from flex_attn_model import TransformerRegressor, clustering
 #from custom_model import CustomTransformerRegressor, custom_clustering
 from data_processing.dataset import HitsDataset, get_dataloaders
 from data_processing.dataset import load_trackml_data, PAD_TOKEN
@@ -48,21 +49,22 @@ def load_model(config, device):
         else:
             checkpoint = torch.load(config['model']['checkpoint_path'])
 
-        logging.info(f'Checkpoint :  {checkpoint.keys()}')
+        logging.info(f"Checkpoint :  {checkpoint.keys()}")
         model.load_state_dict(checkpoint['model_state_dict'])
         epoch = checkpoint['epoch'] + 1
         
+        """
         # Logic to set the attention mask the same as the one used during training
         if 'att_mask_used' in checkpoint:
             model.set_use_att_mask(checkpoint['att_mask_used'])
-            logging.info(f'Using attention mask is set to {checkpoint['att_mask_used']}')
+            logging.info(f"Using attention mask is set to {checkpoint['att_mask_used']}")
         else:
             model.set_use_att_mask(False)
-            logging.info(f'Using attention mask is set to False')
-
-        logging.info(f'Flash attention is set to {sweep_flash_attention}')
-        logging.info(f'Loaded checkpoint from {config["model"]["checkpoint_path"]}')
-        logging.info(f'Loaded model_state of epoch {epoch}. Ignoring optimizer_state. Starting evaluation from checkpoint.')
+            logging.info(f"Using attention mask is set to False")
+        """ 
+        logging.info(f"Flash attention is set to {sweep_flash_attention}")
+        logging.info(f"Loaded checkpoint from {config['model']['checkpoint_path']}")
+        logging.info(f"Loaded model_state of epoch {epoch}. Ignoring optimizer_state. Starting evaluation from checkpoint.")
 
     model.eval()
     return model 
@@ -83,12 +85,12 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
     for data in test_loader:
         # data is per event (becasue batch_size = 1)
         # Split the data for this event
-        event_id, hits, hits_masking, track_params, track_labels = data
-        hits, hits_masking, track_params, track_labels = hits.to(device), hits_masking.to(device), track_params.to(device), track_labels.to(device)
+        event_id, hits, hits_seq_length, hits_masking, track_params, track_labels = data
+        hits, hits_seq_length, hits_masking, track_params, track_labels = hits.to(device), hits_seq_length.to(device), hits_masking.to(device), track_params.to(device), track_labels.to(device)
  
         # Make prediction
         padding_mask = (hits == PAD_TOKEN).all(dim=2)
-        pred = model(hits, hits_masking, padding_mask)
+        pred = model(hits, hits_seq_length)
 
         pred = torch.unsqueeze(pred[~padding_mask], 0)
 
@@ -154,17 +156,17 @@ def main(config_path):
                                 run_name=run_name,
                                 job_type="evaluation")
     wandb_logger.initialize()
-    logging.info(f'Loading config from {config_path} ')
-    logging.info(f'Description: {config['experiment']["description"]}')
-    logging.info(f'Output_dir: {output_dir}')
+    logging.info(f"Loading config from {config_path} ")
+    logging.info(f"Description: {config['experiment']['description']}")
+    logging.info(f"Output_dir: {output_dir}")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logging.info(f'Device: {device}')
+    logging.info(f"Device: {device}")
 
     torch.manual_seed(37)  # for reproducibility
     data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
-    logging.info(f'Loading data from {data_path} ...')
+    logging.info(f"Loading data from {data_path} ...")
     hits_data, hits_data_seq_lengths, hits_masking, track_params_data, track_particle_data = load_trackml_data(data=data_path)
-    dataset = HitsDataset(hits_data, hits_masking, track_params_data, track_particle_data)
+    dataset = HitsDataset(hits_data, hits_data_seq_lengths, hits_masking, track_params_data, track_particle_data)
     # Test loader has batch size 1 in defintion
     _, _, test_loader = get_dataloaders(dataset,
                                         train_frac=0.7,

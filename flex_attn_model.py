@@ -33,11 +33,7 @@ def get_compiled_flex_attention():
         _compiled_flex_attention = torch.compile(flex_attention)
     return _compiled_flex_attention
 
-def sliding_window(b, h, q_idx, kv_idx):
-    windowed_mask = (
-        (q_idx - kv_idx).abs() <= SLIDING_WINDOW
-    )  
-    return  windowed_mask
+
 
 class MultiheadFlexAttention(Module):
     def __init__(
@@ -100,18 +96,20 @@ class MultiheadFlexAttention(Module):
         #num_of_padded_elements = (~key_padding_mask).sum(dim=1) 
         true_seq_length_ex_padding = query_seq_length
 
-        def padding_mask(b, h, q_idx, kv_idx):
+        # TODO: Move this mask outside of the forward function
+        def sliding_window_and_padding_mask(b, h, q_idx, kv_idx):
 
             row_mask = q_idx <= true_seq_length_ex_padding[b]
             column_mask = kv_idx <= true_seq_length_ex_padding[b]
-            
-            return row_mask & column_mask
+            windowed_mask = ((q_idx - kv_idx).abs() <= 50)  
+
+            return row_mask & column_mask & windowed_mask
 
         def padding_score_mod(score, b, h, q_idx, kv_idx):
             return score
 
         # Apply custom flex attention
-        padding_block_mask = create_block_mask(padding_mask, batch_size, None, seq_len, seq_len, device=query.device)
+        padding_block_mask = create_block_mask(sliding_window_and_padding_mask, batch_size, None, seq_len, seq_len, device=query.device)
         compiled_flex_attention = get_compiled_flex_attention()
         attn_output = compiled_flex_attention(query, key, value, block_mask=padding_block_mask)
 
@@ -225,7 +223,7 @@ class TransformerRegressor(Module):
         return out
     
     
-def custom_clustering(pred_params, min_cl_size, min_samples):
+def clustering(pred_params, min_cl_size, min_samples):
     '''
     Function to perform HDBSCAN on the predicted track parameters, with specified
     HDBSCAN hyperparameters. Returns the associated cluster IDs.
