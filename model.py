@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
-from torch.nn.attention import SDPBackend, sdpa_kernel
 import numpy as np
-from hdbscan import HDBSCAN
 import logging
 
 class TransformerRegressor(nn.Module):
@@ -11,7 +9,7 @@ class TransformerRegressor(nn.Module):
     Takes the hits (i.e 2D or 3D coordinates) and outputs the probability of each
     hit belonging to each of the 20 possible tracks (classes).
     '''
-    def __init__(self, num_encoder_layers, d_model, n_head, input_size, output_size, dim_feedforward, dropout, use_att_mask=False, wandb_logger=None, use_flash_attention=False):
+    def __init__(self, num_encoder_layers, d_model, n_head, input_size, output_size, dim_feedforward, dropout, use_att_mask=False, wandb_logger=None):
         super(TransformerRegressor, self).__init__()
         self.input_layer = nn.Linear(input_size, d_model)
 
@@ -20,7 +18,6 @@ class TransformerRegressor(nn.Module):
         self.decoder = nn.Linear(d_model, output_size)
         self.num_heads = n_head
         self.att_mask_used = use_att_mask
-        self.flash_attention = use_flash_attention
 
         # Initialize the wandb logger
         self.wandb_logger = wandb_logger
@@ -44,6 +41,8 @@ class TransformerRegressor(nn.Module):
     def forward(self, input_coord, input_for_mask, padding_mask):
         # Here we use only 3 coordinates x,y,z as input to the model
         x = self.input_layer(input_coord)  # Transform coordinates part of the input into d_model space
+
+        expanded_mask = None
 
         if self.att_mask_used:
             batch_size, seq_len, _ = x.size()
@@ -69,19 +68,7 @@ class TransformerRegressor(nn.Module):
             
             expanded_mask = distance_mask.unsqueeze(1).expand(batch_size, num_heads, seq_len, seq_len).reshape(batch_size * num_heads, seq_len, seq_len)
 
-            # Apply the distance mask to the attention mechanism
-             # Enable Flash Attention and apply to encoder
-            if self.flash_attention:
-                with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-                    memory = self.encoder(x, mask=expanded_mask, src_key_padding_mask=padding_mask)
-            else:
-                memory = self.encoder(src=x, src_key_padding_mask=padding_mask, mask=expanded_mask)
-        else:
-            if self.flash_attention:
-                with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-                    memory = self.encoder(src=x, src_key_padding_mask=padding_mask)
-            else:
-                memory = self.encoder(src=x, src_key_padding_mask=padding_mask)
+        memory = self.encoder(src=x, src_key_padding_mask=padding_mask, mask=expanded_mask)
 
         # Regularization of the output for stability of clustering algorithm
         if torch.isnan(memory).any(): 
@@ -156,20 +143,7 @@ class TransformerRegressor(nn.Module):
 
         return mask  # Shape: [batch_size, seq_len, seq_len]
     
-def clustering(pred_params, min_cl_size, min_samples):
-    '''
-    Function to perform HDBSCAN on the predicted track parameters, with specified
-    HDBSCAN hyperparameters. Returns the associated cluster IDs.
-    '''
-    clustering_algorithm = HDBSCAN(min_cluster_size=min_cl_size, min_samples=min_samples)
-    cluster_labels = []
-    for _, event_prediction in enumerate(pred_params):
-        regressed_params = np.array(event_prediction.tolist())
-        event_cluster_labels = clustering_algorithm.fit_predict(regressed_params)
-        cluster_labels.append(event_cluster_labels)
 
-    cluster_labels = [torch.from_numpy(cl_lbl).int() for cl_lbl in cluster_labels]
-    return cluster_labels
 
 def calc_efficiency_purity(distance_mask, input_for_mask, padding_mask):
     # Calculate the efficiency and purity of the distance mask

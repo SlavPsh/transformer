@@ -10,7 +10,6 @@ from utils.wandb_utils import WandbLogger
 import argparse
 import logging
 import os, sys
-from time import gmtime, strftime
 from coolname import generate_slug
 from data_processing.dataset import HitsDataset, PAD_TOKEN, get_dataloaders
 
@@ -45,6 +44,7 @@ def setup_training(config, device):
             dropout=config['model']['dropout']
         ).to(device)
     else:
+        from model import TransformerRegressor
         # model
         model = TransformerRegressor(
             num_encoder_layers = config['model']['num_encoder_layers'],
@@ -54,8 +54,7 @@ def setup_training(config, device):
             output_size = config['model']['output_size'],
             dim_feedforward=config['model']['dim_feedforward'],
             dropout=config['model']['dropout'],
-            use_att_mask=sweep_att_mask,
-            use_flash_attention=sweep_flash_attention
+            use_att_mask=sweep_att_mask
         ).to(device)
 
     # optimizer
@@ -256,7 +255,6 @@ def main(config_path):
         val_loss = evaluate(model, valid_loader, loss_fn, device)
 
         # Print info to the cluster logging
-        logging.info(strftime("%Y-%m-%d %H:%M:%S", gmtime()))
         logging.info(f"Epoch: {epoch}\nVal loss: {val_loss:.10f}, Train loss: {train_loss:.10f}")
         train_losses.append(train_loss)
         val_losses.append(val_loss)
@@ -277,8 +275,6 @@ def main(config_path):
             count += 1
 
         if count >= early_stopping_epoch:
-            print(strftime("%Y-%m-%d %H:%M:%S", gmtime()))
-            print("Early stopping...")
             logging.info("Early stopping triggered")
             break
     

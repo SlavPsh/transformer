@@ -24,7 +24,7 @@ def load_model(config, device):
     sweep_flash_attention = wandb.config.use_flash_attention if 'use_flash_attention' in wandb.config else config_flash_attention
 
     if config_model_type == 'flex_attention':
-        from flex_attn_model import TransformerRegressor, clustering
+        from flex_attn_model import TransformerRegressor
         logging.info("Loading model with flex attention")
         # model
         model = TransformerRegressor(
@@ -35,6 +35,20 @@ def load_model(config, device):
             output_size = config['model']['output_size'],
             dim_feedforward=config['model']['dim_feedforward'],
             dropout=config['model']['dropout']
+        ).to(device)
+    else: 
+        from model import TransformerRegressor
+        logging.info("Loading model with standard attention")
+        # model
+        model = TransformerRegressor(
+            num_encoder_layers = config['model']['num_encoder_layers'],
+            d_model = config['model']['d_model'],
+            n_head=config['model']['n_head'],
+            input_size = config['model']['input_size'],
+            output_size = config['model']['output_size'],
+            dim_feedforward=config['model']['dim_feedforward'],
+            dropout=config['model']['dropout'],
+            use_att_mask=sweep_att_mask
         ).to(device)
 
     if 'checkpoint_path' not in config['model'] or not config['model']['checkpoint_path']:
