@@ -1,10 +1,8 @@
 import torch
-#from model import TransformerRegressor, clustering
-from flex_attn_model import TransformerRegressor, clustering
-#from custom_model import CustomTransformerRegressor, custom_clustering
 from data_processing.dataset import HitsDataset, get_dataloaders
 from data_processing.dataset import load_trackml_data, PAD_TOKEN
 from evaluation.scoring import calc_score_trackml, calculate_bined_scores, calc_edge_efficiency
+from evaluation.clustering import clustering
 #from evaluation.plotting import plot_heatmap
 
 # Import supporting tools
@@ -12,11 +10,7 @@ from utils.io_utils import load_config, setup_logging, unique_output_dir, copy_c
 from utils.wandb_utils import WandbLogger
 import argparse
 import logging
-from time import gmtime, strftime
 from coolname import generate_slug
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
 import wandb
 
 
@@ -24,22 +18,24 @@ def load_model(config, device):
 
     config_flash_attention = config['model']['use_flash_attention']
     config_att_mask = config['model']['use_att_mask']
+    config_model_type = config['model']['type']
     
     sweep_att_mask = wandb.config.use_att_mask if 'use_att_mask' in wandb.config else config_att_mask
     sweep_flash_attention = wandb.config.use_flash_attention if 'use_flash_attention' in wandb.config else config_flash_attention
 
-    # model
-    model = TransformerRegressor(
-        num_encoder_layers = config['model']['num_encoder_layers'],
-        d_model = config['model']['d_model'],
-        n_head=config['model']['n_head'],
-        input_size = config['model']['input_size'],
-        output_size = config['model']['output_size'],
-        dim_feedforward=config['model']['dim_feedforward'],
-        dropout=config['model']['dropout'],
-        use_att_mask=sweep_att_mask,
-        use_flash_attention=sweep_flash_attention
-    ).to(device)
+    if config_model_type == 'flex_attention':
+        from flex_attn_model import TransformerRegressor, clustering
+        logging.info("Loading model with flex attention")
+        # model
+        model = TransformerRegressor(
+            num_encoder_layers = config['model']['num_encoder_layers'],
+            d_model = config['model']['d_model'],
+            n_head=config['model']['n_head'],
+            input_size = config['model']['input_size'],
+            output_size = config['model']['output_size'],
+            dim_feedforward=config['model']['dim_feedforward'],
+            dropout=config['model']['dropout']
+        ).to(device)
 
     if 'checkpoint_path' not in config['model'] or not config['model']['checkpoint_path']:
         logging.error('Checkpoint path must be provided for evaluation.')
@@ -125,12 +121,10 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
                        }
             wandb_logger.log(metrics)
         
+        # Free up memory
         del hits, hits_masking, track_params, padding_mask, pred, track_labels
         if device.type == "cuda":
             torch.cuda.empty_cache()
-
-        #for _, e_id in enumerate(event_id):
-        #    predictions[e_id.item()] = (hits, pred, track_params, cluster_labels, track_labels, event_score)
 
     total_average_score = score/len(test_loader)
     total_average_edge_efficiency = edge_efficiency/len(test_loader)

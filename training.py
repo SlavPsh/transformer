@@ -12,11 +12,6 @@ import logging
 import os, sys
 from time import gmtime, strftime
 from coolname import generate_slug
-
-#from model import TransformerRegressor
-#from fa_model import TransformerRegressor
-from flex_attn_model import TransformerRegressor
-
 from data_processing.dataset import HitsDataset, PAD_TOKEN, get_dataloaders
 
 
@@ -28,23 +23,40 @@ def setup_training(config, device):
     config_flash_attention = config['model']['use_flash_attention']
     config_att_mask = config['model']['use_att_mask']
     config_lr = config['training']['default_lr']
+    config_model_type = config['model']['type']
 
     sweep_learning_rate = wandb.config.learning_rate if 'learning_rate' in wandb.config else config_lr
     sweep_att_mask = wandb.config.use_att_mask if 'use_att_mask' in wandb.config else config_att_mask
     sweep_flash_attention = wandb.config.use_flash_attention if 'use_flash_attention' in wandb.config else config_flash_attention
 
-    # model
-    model = TransformerRegressor(
-        num_encoder_layers = config['model']['num_encoder_layers'],
-        d_model = config['model']['d_model'],
-        n_head=config['model']['n_head'],
-        input_size = config['model']['input_size'],
-        output_size = config['model']['output_size'],
-        dim_feedforward=config['model']['dim_feedforward'],
-        dropout=config['model']['dropout'],
-        use_att_mask=sweep_att_mask,
-        use_flash_attention=sweep_flash_attention
-    ).to(device)
+    
+    if config_model_type == 'flex_attention':
+        from flex_attn_model import TransformerRegressor
+        
+        logging.info(f"Using flex attention model")
+        # model
+        model = TransformerRegressor(
+            num_encoder_layers = config['model']['num_encoder_layers'],
+            d_model = config['model']['d_model'],
+            n_head=config['model']['n_head'],
+            input_size = config['model']['input_size'],
+            output_size = config['model']['output_size'],
+            dim_feedforward=config['model']['dim_feedforward'],
+            dropout=config['model']['dropout']
+        ).to(device)
+    else:
+        # model
+        model = TransformerRegressor(
+            num_encoder_layers = config['model']['num_encoder_layers'],
+            d_model = config['model']['d_model'],
+            n_head=config['model']['n_head'],
+            input_size = config['model']['input_size'],
+            output_size = config['model']['output_size'],
+            dim_feedforward=config['model']['dim_feedforward'],
+            dropout=config['model']['dropout'],
+            use_att_mask=sweep_att_mask,
+            use_flash_attention=sweep_flash_attention
+        ).to(device)
 
     # optimizer
 

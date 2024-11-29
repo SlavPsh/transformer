@@ -2,7 +2,6 @@ import torch
 
 from torch.nn.attention import SDPBackend, sdpa_kernel
 import numpy as np
-from hdbscan import HDBSCAN
 import logging
 import copy
 from typing import Optional, Union, Callable, Tuple
@@ -224,21 +223,6 @@ class TransformerRegressor(Module):
 
         return mask  # Shape: [batch_size, seq_len, seq_len]
     
-def custom_clustering(pred_params, min_cl_size, min_samples):
-    '''
-    Function to perform HDBSCAN on the predicted track parameters, with specified
-    HDBSCAN hyperparameters. Returns the associated cluster IDs.
-    '''
-    clustering_algorithm = HDBSCAN(min_cluster_size=min_cl_size, min_samples=min_samples)
-    cluster_labels = []
-    for _, event_prediction in enumerate(pred_params):
-        regressed_params = np.array(event_prediction.tolist())
-        event_cluster_labels = clustering_algorithm.fit_predict(regressed_params)
-        cluster_labels.append(event_cluster_labels)
-
-    cluster_labels = [torch.from_numpy(cl_lbl).int() for cl_lbl in cluster_labels]
-    return cluster_labels
-
 def calc_efficiency_purity(distance_mask, input_for_mask, padding_mask):
     # Calculate the efficiency and purity of the distance mask
     points = input_for_mask.detach()  # Shape: [batch_size, seq_len, num_features]

@@ -1,12 +1,9 @@
 import torch
 import torch.nn as nn
 
-import numpy as np
-from hdbscan import HDBSCAN
 import logging
 import copy
 from typing import Optional, Union, Callable, Tuple
-#from torch.nn import TransformerEncoder
 
 from torch.nn.modules.container import ModuleList
 from torch.nn.modules.linear import Linear
@@ -190,7 +187,7 @@ class TransformerRegressor(Module):
     Takes the hits (i.e 2D or 3D coordinates) and outputs the probability of each
     hit belonging to each of the 20 possible tracks (classes).
     '''
-    def __init__(self, num_encoder_layers, d_model, n_head, input_size, output_size, dim_feedforward, dropout, use_att_mask=False, wandb_logger=None, use_flash_attention=False):
+    def __init__(self, num_encoder_layers, d_model, n_head, input_size, output_size, dim_feedforward, dropout, wandb_logger=None):
         super(TransformerRegressor, self).__init__()
         self.input_layer = Linear(input_size, d_model)
 
@@ -223,22 +220,6 @@ class TransformerRegressor(Module):
         return out
     
     
-def clustering(pred_params, min_cl_size, min_samples):
-    '''
-    Function to perform HDBSCAN on the predicted track parameters, with specified
-    HDBSCAN hyperparameters. Returns the associated cluster IDs.
-    '''
-    clustering_algorithm = HDBSCAN(min_cluster_size=min_cl_size, min_samples=min_samples)
-    cluster_labels = []
-    for _, event_prediction in enumerate(pred_params):
-        regressed_params = np.array(event_prediction.tolist())
-        event_cluster_labels = clustering_algorithm.fit_predict(regressed_params)
-        cluster_labels.append(event_cluster_labels)
-
-    cluster_labels = [torch.from_numpy(cl_lbl).int() for cl_lbl in cluster_labels]
-    return cluster_labels
-
-
 class FlexTransformerEncoderLayer(Module):
     def __init__(
         self,
