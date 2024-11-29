@@ -74,7 +74,7 @@ class MultiheadFlexAttention(Module):
         # Dropout
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, query, key, value, key_padding_mask=None):
+    def forward(self, query, key, value, query_seq_length=None):
         # Shape checks
         if self.batch_first:
             query, key, value = query.transpose(-3, -2), key.transpose(-3, -2), value.transpose(-3, -2)
@@ -97,12 +97,13 @@ class MultiheadFlexAttention(Module):
         key = key.view(seq_len, batch_size, self.num_heads, self.head_dim).transpose(0, 1).transpose(1, 2)  # [batch_size, num_heads, seq_len, head_dim]
         value = value.view(seq_len, batch_size, self.num_heads, self.head_dim).transpose(0, 1).transpose(1, 2)  # [batch_size, num_heads, seq_len, head_dim]
 
-        num_of_padded_elements = (~key_padding_mask).sum(dim=1) 
+        #num_of_padded_elements = (~key_padding_mask).sum(dim=1) 
+        true_seq_length_ex_padding = query_seq_length
 
         def padding_mask(b, h, q_idx, kv_idx):
 
-            row_mask = q_idx <= num_of_padded_elements[b]
-            column_mask = kv_idx <= num_of_padded_elements[b]
+            row_mask = q_idx <= true_seq_length_ex_padding[b]
+            column_mask = kv_idx <= true_seq_length_ex_padding[b]
             
             return row_mask & column_mask
 

@@ -93,16 +93,16 @@ def train_epoch(model, optim, train_loader, loss_fn, device):
     losses = 0.
 
     for data in train_loader:
-        _, hits, hits_masking, track_params, _ = data
+        _, hits, hits_seq_length, hits_masking, track_params, _ = data
         # Zero the gradients
 
         optim.zero_grad()
         # Transfer batch to GPU
-        hits, hits_masking, track_params = hits.to(device), hits_masking.to(device), track_params.to(device)
+        hits, hits_seq_length, hits_masking, track_params = hits.to(device),hits_seq_length.to(device), hits_masking.to(device), track_params.to(device)
         # Make prediction
         padding_mask = (hits == PAD_TOKEN).all(dim=2)
         
-        pred = model(hits, padding_mask)
+        pred = model(hits, hits_seq_length)
 
         pred = torch.unsqueeze(pred[~padding_mask], 0)
         track_params = torch.unsqueeze(track_params[~padding_mask], 0)
@@ -134,11 +134,11 @@ def evaluate(model, validation_loader, loss_fn, device):
     losses = 0.
     with torch.no_grad():
         for data in validation_loader:
-            _, hits, hits_masking, track_params, _ = data
-            hits, hits_masking, track_params = hits.to(device), hits_masking.to(device), track_params.to(device)
+            _, hits, hits_seq_length, hits_masking, track_params, _ = data
+            hits, hits_seq_length, hits_masking, track_params = hits.to(device), hits_seq_length.to(device), hits_masking.to(device), track_params.to(device)
             # Make prediction
             padding_mask = (hits == PAD_TOKEN).all(dim=2)
-            pred = model(hits, padding_mask)
+            pred = model(hits, hits_seq_length)
 
             pred = torch.unsqueeze(pred[~padding_mask], 0)
             track_params = torch.unsqueeze(track_params[~padding_mask], 0)
@@ -203,8 +203,8 @@ def main(config_path):
     torch.manual_seed(37)  # for reproducibility
     data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
     logging.info(f'Loading data from {data_path} ...')
-    hits_data, hits_masking, track_params_data, track_classes_data = load_trackml_data(data=data_path)
-    dataset = HitsDataset(hits_data, hits_masking, track_params_data, track_classes_data)
+    hits_data, hits_data_seq_lengths, hits_masking, track_params_data, track_classes_data = load_trackml_data(data=data_path)
+    dataset = HitsDataset(hits_data, hits_data_seq_lengths, hits_masking, track_params_data, track_classes_data)
 
     batch_size = config['training']['batch_size']
     train_loader, valid_loader, _ = get_dataloaders(dataset,

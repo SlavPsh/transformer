@@ -7,8 +7,9 @@ PAD_TOKEN = -1
 
 class HitsDataset(Dataset):
 
-    def __init__(self, hits_data, hits_masking, track_params_data=None, particle_data=None):
+    def __init__(self, hits_data, hits_seq_length, hits_masking, track_params_data=None, particle_data=None):
         self.hits_data = hits_data
+        self.hits_seq_length = hits_seq_length
         self.hits_masking = hits_masking
         self.track_params_data = track_params_data
         self.particle_data = particle_data
@@ -18,7 +19,7 @@ class HitsDataset(Dataset):
         return self.hits_data.shape[0]
 
     def __getitem__(self, idx):
-        return idx, self.hits_data[idx], self.hits_masking[idx], self.track_params_data[idx], self.particle_data[idx]
+        return idx, self.hits_data[idx], self.hits_seq_length[idx], self.hits_masking[idx], self.track_params_data[idx], self.particle_data[idx]
 
 def get_dataloaders(dataset, train_frac, valid_frac, test_frac, batch_size, drop_last=False):
     train_set, valid_set, test_set = random_split(dataset, [train_frac, valid_frac, test_frac], generator=torch.Generator().manual_seed(37))
@@ -62,12 +63,13 @@ def load_trackml_data(data, normalize=False, chunking=False):
     shuffled_data['eta'] = -np.log(np.tan(shuffled_data['theta']/2.))
     data_grouped_by_event = shuffled_data.groupby("event_id")
     max_num_hits = data_grouped_by_event.size().max() + 1
-    max_num_hits_fixed = 700
 
     def extract_hits_data(event_rows):
         # Returns the hit coordinates as a padded sequence; this is the input to the transformer
+        sequence_length = len(event_rows)
         event_hit_data = event_rows[["x", "y", "z"]].to_numpy(dtype=np.float32)
-        return np.pad(event_hit_data, [(0, max_num_hits-len(event_rows)), (0, 0)], "constant", constant_values=PAD_TOKEN)
+        padded_hit_data = np.pad(event_hit_data, [(0, max_num_hits-sequence_length), (0, 0)], "constant", constant_values=PAD_TOKEN)
+        return padded_hit_data, sequence_length
     
     def extract_hits_data_for_masking(event_rows):
         # Returns the hit coordinates as a padded sequence; this is the input to the transformer
@@ -100,16 +102,19 @@ def load_trackml_data(data, normalize=False, chunking=False):
         return np.pad(event_hit_classes_data, [(0, max_num_hits-len(event_rows)), (0, 0)], "constant", constant_values=PAD_TOKEN)
 
     # Get the hits, track params and their weights as sequences padded up to a max length
-    grouped_hits_data = data_grouped_by_event.apply(extract_hits_data)
+    results = data_grouped_by_event.apply(extract_hits_data)
+    grouped_hits_data, sequence_lengths = zip(*results)
+
     grouped_masking_data = data_grouped_by_event.apply(extract_hits_data_for_masking)
     grouped_track_params_data = data_grouped_by_event.apply(extract_track_params_data)
     grouped_particle_data = data_grouped_by_event.apply(extract_particle_data)
     
 
     # Stack them together into one tensor
-    hits_data = torch.tensor(np.stack(grouped_hits_data.values))
+    hits_data = torch.tensor(np.stack(grouped_hits_data))
+    hits_data_seq_lengths = torch.tensor(sequence_lengths) 
     hits_data_for_masking = torch.tensor(np.stack(grouped_masking_data.values))
     track_params_data = torch.tensor(np.stack(grouped_track_params_data.values))
     hit_particle_data = torch.tensor(np.stack(grouped_particle_data.values))
 
-    return hits_data, hits_data_for_masking, track_params_data, hit_particle_data
+    return hits_data, hits_data_seq_lengths, hits_data_for_masking, track_params_data, hit_particle_data
