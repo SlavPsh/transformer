@@ -113,7 +113,7 @@ def train_epoch(model, optim, train_loader, loss_fn, device):
         # Make prediction
         padding_mask = (hits == PAD_TOKEN).all(dim=2)
         
-        pred = model(hits, hits_seq_length)
+        pred = model(hits, padding_mask=padding_mask, seq_lengths=hits_seq_length)
 
         pred = torch.unsqueeze(pred[~padding_mask], 0)
         track_params = torch.unsqueeze(track_params[~padding_mask], 0)
@@ -149,7 +149,7 @@ def evaluate(model, validation_loader, loss_fn, device):
             hits, hits_seq_length, hits_masking, track_params = hits.to(device), hits_seq_length.to(device), hits_masking.to(device), track_params.to(device)
             # Make prediction
             padding_mask = (hits == PAD_TOKEN).all(dim=2)
-            pred = model(hits, hits_seq_length)
+            pred = model(hits, padding_mask=padding_mask, seq_lengths=hits_seq_length)
 
             pred = torch.unsqueeze(pred[~padding_mask], 0)
             track_params = torch.unsqueeze(track_params[~padding_mask], 0)

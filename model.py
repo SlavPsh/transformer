@@ -38,13 +38,14 @@ class TransformerRegressor(nn.Module):
     def set_use_att_mask(self, use_att_mask):
         self.att_mask_used = use_att_mask
     
-    def forward(self, input_coord, input_for_mask, padding_mask):
+    def forward(self, input_coord, seq_lengths=None, input_for_mask=None, padding_mask=None):
+        
         # Here we use only 3 coordinates x,y,z as input to the model
         x = self.input_layer(input_coord)  # Transform coordinates part of the input into d_model space
 
         expanded_mask = None
 
-        if self.att_mask_used:
+        if self.att_mask_used and (input_for_mask is not None):
             batch_size, seq_len, _ = x.size()
             num_heads = self.num_heads
             # Calculate the distance mask using the raw input
@@ -69,6 +70,7 @@ class TransformerRegressor(nn.Module):
             expanded_mask = distance_mask.unsqueeze(1).expand(batch_size, num_heads, seq_len, seq_len).reshape(batch_size * num_heads, seq_len, seq_len)
 
         memory = self.encoder(src=x, src_key_padding_mask=padding_mask, mask=expanded_mask)
+
 
         # Regularization of the output for stability of clustering algorithm
         if torch.isnan(memory).any(): 
