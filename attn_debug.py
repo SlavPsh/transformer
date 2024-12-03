@@ -398,10 +398,10 @@ torch.manual_seed(42)
 encoder_layer = flex.TransformerEncoderLayer(d_model, nheads, 16, dropout=0, batch_first=True)
 
 # ``nn.MultiheadAttention`` uses a non conventional initialization for layers, so do this for exact parity :(
-encoder_layer.self_attn.in_proj_weight = nn.Parameter(vanilla_encoder_layer.self_attn.in_proj_weight.clone().detach())
-encoder_layer.self_attn.out_proj.weight = nn.Parameter(vanilla_encoder_layer.self_attn.out_proj.weight.clone().detach())
-encoder_layer.self_attn.in_proj_bias = nn.Parameter(vanilla_encoder_layer.self_attn.in_proj_bias.clone().detach())
-encoder_layer.self_attn.out_proj.bias = nn.Parameter(vanilla_encoder_layer.self_attn.out_proj.bias.clone().detach())
+#encoder_layer.self_attn.in_proj_weight = nn.Parameter(vanilla_encoder_layer.self_attn.in_proj_weight.clone().detach())
+#encoder_layer.self_attn.out_proj.weight = nn.Parameter(vanilla_encoder_layer.self_attn.out_proj.weight.clone().detach())
+#encoder_layer.self_attn.in_proj_bias = nn.Parameter(vanilla_encoder_layer.self_attn.in_proj_bias.clone().detach())
+#encoder_layer.self_attn.out_proj.bias = nn.Parameter(vanilla_encoder_layer.self_attn.out_proj.bias.clone().detach())
 
 torch.manual_seed(42)
 standard_result = vanilla_encoder_layer(query1)
