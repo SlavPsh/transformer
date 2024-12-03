@@ -270,7 +270,7 @@ def sliding_window_causal_mask(b, h, q_idx, kv_idx):
 
 
 #test_mask(mask_mod=sliding_window_causal_mask)
-
+batch_sz = 1
 N, E_q, E_k, E_v, E_total = 5, 16, 16, 16, 16
 E_out = E_q
 d_model = E_q
@@ -282,13 +282,13 @@ device='cuda'
 input_data = torch.randn(1, N, 3, device="cuda", dtype=torch.float32, requires_grad=True)
 
 query = torch.randn(
-2, N, E_q, device="cuda", dtype=torch.float32, requires_grad=True
+batch_sz, N, E_q, device="cuda", dtype=torch.float32, requires_grad=True
 )
 key = torch.randn(
-2, N, E_k, device="cuda", dtype=torch.float32, requires_grad=True
+batch_sz, N, E_k, device="cuda", dtype=torch.float32, requires_grad=True
 )
 value = torch.randn(
-2, N, E_v, device="cuda", dtype=torch.float32, requires_grad=True
+batch_sz, N, E_v, device="cuda", dtype=torch.float32, requires_grad=True
 )
 
 torch.manual_seed(42)
@@ -320,13 +320,15 @@ padding_mask[:, -2:] = True
 
 #output_standard = standard_model(input_data, padding_mask=padding_mask)
 #output_flex = flex_model(input_data, seq_lengths=torch.tensor([3]))
-output_standard = standard_model(input_data)
-output_flex = flex_model(input_data)
+#output_standard = standard_model(input_data)
+#output_flex = flex_model(input_data)
 
 import flex_attn_model as flex
+"""
+from nested_mha import NestedMultiHeadAttention
 
 query, key, value, sentence_lengths = gen_batch(N, E_q, E_k, E_v, device)
-print(query)
+
 S = sentence_lengths.max().item()
 print(f"Total sequence length in nested query {sentence_lengths.sum().item()}, max sequence length {S}")
 padded_query, padded_key, padded_value = (
@@ -334,7 +336,7 @@ padded_query, padded_key, padded_value = (
 )
 
 vanilla_mha_layer = nn.MultiheadAttention(E_q, nheads, dropout=dropout, batch_first=True, bias=bias, device='cuda')
-mha_layer = flex.MultiHeadAttention(E_q, E_k, E_v, E_total, nheads, dropout=dropout, bias=bias, device='cuda')
+mha_layer = NestedMultiHeadAttention(E_q, E_k, E_v, E_total, nheads, dropout=dropout, bias=bias, device='cuda')
 
 # ``nn.MultiheadAttention`` uses a non conventional initialization for layers, so do this for exact parity :(
 mha_layer.out_proj.weight = nn.Parameter(vanilla_mha_layer.out_proj.weight.clone().detach())
@@ -358,12 +360,12 @@ standard_result = vanilla_mha_layer(padded_query,
 from torch.nn.attention.flex_attention import flex_attention
 
 def generate_alibi_bias(H: int):
-    """Returns an alibi bias score_mod given the number of heads H
+    ""Returns an alibi bias score_mod given the number of heads H
     Args:
         H: number of heads
     Returns:
         alibi_bias: alibi bias score_mod
-    """
+    ""
     def alibi_mod(score, b, h, q_idx, kv_idx):
         scale = torch.exp2(-((h + 1) * 8.0 / H))
         bias = (q_idx - kv_idx) * scale
@@ -382,4 +384,32 @@ value = (
 )
 out_flex2 = flex_attention(query, query, query, score_mod=alibi_score_mod)
 
-print(out_flex2)
+"""
+
+print("Test of the transformer encoder layer\n")
+query = torch.randn(
+batch_sz, N, E_q, device="cuda", dtype=torch.float32, requires_grad=True
+)
+query1 = query.clone().detach()
+
+torch.manual_seed(42)
+vanilla_encoder_layer = nn.TransformerEncoderLayer(d_model, nheads, 16, dropout=0, batch_first=True)
+torch.manual_seed(42)
+encoder_layer = flex.TransformerEncoderLayer(d_model, nheads, 16, dropout=0, batch_first=True)
+
+# ``nn.MultiheadAttention`` uses a non conventional initialization for layers, so do this for exact parity :(
+encoder_layer.self_attn.in_proj_weight = nn.Parameter(vanilla_encoder_layer.self_attn.in_proj_weight.clone().detach())
+encoder_layer.self_attn.out_proj.weight = nn.Parameter(vanilla_encoder_layer.self_attn.out_proj.weight.clone().detach())
+encoder_layer.self_attn.in_proj_bias = nn.Parameter(vanilla_encoder_layer.self_attn.in_proj_bias.clone().detach())
+encoder_layer.self_attn.out_proj.bias = nn.Parameter(vanilla_encoder_layer.self_attn.out_proj.bias.clone().detach())
+
+torch.manual_seed(42)
+standard_result = vanilla_encoder_layer(query1)
+torch.manual_seed(42)
+new_result = encoder_layer(query)
+
+
+print(new_result)
+print(standard_result)
+
+
