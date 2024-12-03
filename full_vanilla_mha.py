@@ -53,7 +53,7 @@ def _is_make_fx_tracing():
     else:
         return False
 
-class FlexMultiheadAttention(Module):
+class VanillaMultiheadAttention(Module):
     r"""Allows the model to jointly attend to information from different representation subspaces.
 
     Method described in the paper:

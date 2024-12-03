@@ -19,21 +19,16 @@ def setup_training(config, device):
     Sets up the model, optimizer, and loss function for training. Returns the model,
     optimizer, loss function, and the starting epoch.
     '''
-    config_flash_attention = config['model']['use_flash_attention']
-    config_att_mask = config['model']['use_att_mask']
     config_lr = config['training']['default_lr']
     config_model_type = config['model']['type']
+    logging.info(f"Model type: {config_model_type}")
 
     sweep_learning_rate = wandb.config.learning_rate if 'learning_rate' in wandb.config else config_lr
-    sweep_att_mask = wandb.config.use_att_mask if 'use_att_mask' in wandb.config else config_att_mask
-    sweep_flash_attention = wandb.config.use_flash_attention if 'use_flash_attention' in wandb.config else config_flash_attention
 
     
-    if config_model_type == 'flex_attention':
-        from flex_attn_model import TransformerRegressor
-        
-        logging.info(f"Using flex attention model")
-        # model
+    if config_model_type == 'vanilla':
+        from vanilla_model import TransformerRegressor
+
         model = TransformerRegressor(
             num_encoder_layers = config['model']['num_encoder_layers'],
             d_model = config['model']['d_model'],
@@ -43,9 +38,10 @@ def setup_training(config, device):
             dim_feedforward=config['model']['dim_feedforward'],
             dropout=config['model']['dropout']
         ).to(device)
-    else:
-        from model import TransformerRegressor
-        # model
+    elif config_model_type == 'flash_attention':
+        from flash_model import TransformerRegressor
+        print("FlashAttention available:", torch.backends.cuda.flash_sdp_enabled())
+
         model = TransformerRegressor(
             num_encoder_layers = config['model']['num_encoder_layers'],
             d_model = config['model']['d_model'],
@@ -53,9 +49,9 @@ def setup_training(config, device):
             input_size = config['model']['input_size'],
             output_size = config['model']['output_size'],
             dim_feedforward=config['model']['dim_feedforward'],
-            dropout=config['model']['dropout'],
-            use_att_mask=sweep_att_mask
+            dropout=config['model']['dropout']
         ).to(device)
+
 
     # optimizer
 
@@ -93,40 +89,62 @@ def setup_training(config, device):
     
     return model, optimizer, loss_fn, start_epoch
 
-def train_epoch(model, optim, train_loader, loss_fn, device):
+def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None):
     '''
     Conducts a single epoch of training: prediction, loss calculation, and loss
     backpropagation. Returns the average loss over the whole train data.
     '''
+
+    config_model_type = config['model']['type']
     # Get the network in train mode
     torch.set_grad_enabled(True)
     model.train()
     losses = 0.
+    intermid_loss = 0.
 
-    for data in train_loader:
+    if config_model_type == 'flash_attention':
+        optim.zero_grad()
+
+    for i, data in enumerate(train_loader):
         _, hits, hits_seq_length, hits_masking, track_params, _ = data
         # Zero the gradients
-
-        optim.zero_grad()
+        if config_model_type != 'flash_attention':
+            optim.zero_grad()
         # Transfer batch to GPU
         hits, hits_seq_length, hits_masking, track_params = hits.to(device),hits_seq_length.to(device), hits_masking.to(device), track_params.to(device)
         # Make prediction
         padding_mask = (hits == PAD_TOKEN).all(dim=2)
-        
-        pred = model(hits, padding_mask=padding_mask, seq_lengths=hits_seq_length)
-
-        pred = torch.unsqueeze(pred[~padding_mask], 0)
         track_params = torch.unsqueeze(track_params[~padding_mask], 0)
-        # Get the weights for the loss function
-        #classes = torch.unsqueeze(classes[~padding_mask], 0)
-        #weights = classes[...,1]
-        #weights = weights.unsqueeze(-1)
-        # Calculate loss and use it to update weights
+
+        if config_model_type == 'flash_attention':
+            hits = torch.unsqueeze(hits[~padding_mask], 0)
+            with torch.amp.autocast('cuda'):
+                pred = model(hits, padding_mask)
+                loss = loss_fn(pred, track_params)
+            # Update loss and scaler after a "batch"
+            intermid_loss += loss
+            if (i+1) % 16 == 0:
+                mean_loss = intermid_loss.mean()
+                scaler.scale(mean_loss).backward()
+                scaler.step(optim)
+                scaler.update()
+                losses += mean_loss.item()
+                intermid_loss = 0.
+                optim.zero_grad()
+        else:
+            pred = model(hits, padding_mask=padding_mask)
+            pred = torch.unsqueeze(pred[~padding_mask], 0)
+  
+            # Get the weights for the loss function
+            #classes = torch.unsqueeze(classes[~padding_mask], 0)
+            #weights = classes[...,1]
+            #weights = weights.unsqueeze(-1)
+            # Calculate loss and use it to update weights
         
-        loss = loss_fn(pred, track_params)
-        loss.backward()
-        optim.step()
-        losses += loss.item()
+            loss = loss_fn(pred, track_params)
+            loss.backward()
+            optim.step()
+            losses += loss.item()
 
         # Free up memory explicitely
         del hits, hits_masking, track_params, padding_mask, pred
@@ -135,32 +153,49 @@ def train_epoch(model, optim, train_loader, loss_fn, device):
 
     return losses / len(train_loader)
 
-def evaluate(model, validation_loader, loss_fn, device):
+def evaluate(model, validation_loader, loss_fn, device, config):
     '''
     Evaluates the network on the validation data by making a prediction and
     calculating the loss. Returns the average loss over the whole val data.
     '''
+    config_model_type = config['model']['type']
     # Get the network in evaluation mode
     model.eval()
     losses = 0.
+    intermid_loss = 0
     with torch.no_grad():
-        for data in validation_loader:
+        for i, data in enumerate(validation_loader):
             _, hits, hits_seq_length, hits_masking, track_params, _ = data
             hits, hits_seq_length, hits_masking, track_params = hits.to(device), hits_seq_length.to(device), hits_masking.to(device), track_params.to(device)
             # Make prediction
             padding_mask = (hits == PAD_TOKEN).all(dim=2)
-            pred = model(hits, padding_mask=padding_mask, seq_lengths=hits_seq_length)
-
-            pred = torch.unsqueeze(pred[~padding_mask], 0)
             track_params = torch.unsqueeze(track_params[~padding_mask], 0)
 
-            # Get the weights for the loss function
-            #classes = torch.unsqueeze(classes[~padding_mask], 0)
-            #weights = classes[...,1]
-            #weights = weights.unsqueeze(-1)
+            if config_model_type == 'flash_attention':
+                hits = torch.unsqueeze(hits[~padding_mask], 0)
+                
+                
+                with torch.amp.autocast('cuda'):
+                    pred = model(hits, padding_mask)
+                    loss = loss_fn(pred, track_params)
+
+                # Update loss after a "batch"
+                intermid_loss += loss
+                if (i+1) % 16 == 0:
+                    mean_loss = intermid_loss.mean()
+                    losses += mean_loss.item()
+                    intermid_loss = 0.
+            else:
+                pred = model(hits, padding_mask=padding_mask)
+                pred = torch.unsqueeze(pred[~padding_mask], 0)
+
+                # Get the weights for the loss function
+                #classes = torch.unsqueeze(classes[~padding_mask], 0)
+                #weights = classes[...,1]
+                #weights = weights.unsqueeze(-1)
             
-            loss = loss_fn(pred, track_params)
-            losses += loss.item()
+                loss = loss_fn(pred, track_params)
+                losses += loss.item()
 
             # Free up memory explicitely
             del hits, hits_masking, track_params, padding_mask, pred
@@ -218,6 +253,13 @@ def main(config_path):
     dataset = HitsDataset(hits_data, hits_data_seq_lengths, hits_masking, track_params_data, track_classes_data)
 
     batch_size = config['training']['batch_size']
+    scaler = None
+    config_model_type = config['model']['type']
+    if config_model_type == 'flash_attention':
+        # Flash attention does not support batch size > 1
+        batch_size = 1
+        scaler = torch.amp.GradScaler('cuda')
+    
     train_loader, valid_loader, _ = get_dataloaders(dataset,
                                                               train_frac=0.7,
                                                               valid_frac=0.15,
@@ -225,7 +267,7 @@ def main(config_path):
                                                               batch_size=batch_size, drop_last=True)
     logging.info(f'Data loaded.')
 
-    config
+
 
     # Set up the model, optimizer, and loss function
     model, optimizer, loss_fn, start_epoch = setup_training(config, device)
@@ -249,10 +291,10 @@ def main(config_path):
 
     for epoch in range(start_epoch, config['training']['total_epochs']):
         # Train the model
-        train_loss = train_epoch(model, optimizer, train_loader, loss_fn, device)
+        train_loss = train_epoch(model, optimizer, train_loader, loss_fn, device, config, scaler)
 
         # Evaluate using validation split
-        val_loss = evaluate(model, valid_loader, loss_fn, device)
+        val_loss = evaluate(model, valid_loader, loss_fn, device, config)
 
         # Print info to the cluster logging
         logging.info(f"Epoch: {epoch}\nVal loss: {val_loss:.10f}, Train loss: {train_loss:.10f}")

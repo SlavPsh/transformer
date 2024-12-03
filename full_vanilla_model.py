@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
-#from torch.nn.modules.activation import MultiheadAttention as vanilla_mha
-from flex_mha import SmallFlexSelfAttention, FlexMultiheadAttention
+#from torch.nn.modules.activation import MultiheadAttention as native_vanilla_mha
+from full_vanilla_mha import VanillaMultiheadAttention
 
 import logging
 import copy
@@ -285,7 +285,7 @@ class TransformerEncoderLayer(Module):
         super().__init__()
         
 
-        self.self_attn = FlexMultiheadAttention(
+        self.self_attn = VanillaMultiheadAttention(
             d_model,
             nhead,
             dropout=dropout,

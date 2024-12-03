@@ -190,8 +190,7 @@ class CausalSelfAttention(Module):
             is_causal = False
 
         # The logic ensuring flash attention is utilized
-        with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-            y = F.scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=dropout, is_causal=is_causal)
+        y = F.scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=dropout, is_causal=is_causal)
     
         y = y.transpose(1, 2).view(batch_size, -1, self.num_heads * head_dim)
 
