@@ -11,6 +11,7 @@ from torch.nn.init import constant_, xavier_normal_, xavier_uniform_
 from torch.nn.parameter import Parameter
 
 from torch.nn.modules.linear import NonDynamicallyQuantizableLinear
+from torch.nn.modules.activation import MultiheadAttention
 from torch.nn.modules.module import Module
 
 
@@ -25,103 +26,11 @@ from torch.overrides import (
     has_torch_function,
 )
 
-def _check_arg_device(x: Optional[torch.Tensor]) -> bool:
-    if x is not None:
-        return x.device.type in [
-            "cpu",
-            "cuda",
-            torch.utils.backend_registration._privateuse1_backend_name,
-        ]
-    return True
+from custom_model import FlexAttentionSingleton
 
 
-def _arg_requires_grad(x: Optional[torch.Tensor]) -> bool:
-    if x is not None:
-        return x.requires_grad
-    return False
-
-
-def _is_make_fx_tracing():
-    if not torch.jit.is_scripting():
-        torch_dispatch_mode_stack = (
-            torch.utils._python_dispatch._get_current_dispatch_mode_stack()
-        )
-        return any(
-            type(x) == torch.fx.experimental.proxy_tensor.ProxyTorchDispatchMode
-            for x in torch_dispatch_mode_stack
-        )
-    else:
-        return False
-
-class VanillaMultiheadAttention(Module):
-    r"""Allows the model to jointly attend to information from different representation subspaces.
-
-    Method described in the paper:
-    `Attention Is All You Need <https://arxiv.org/abs/1706.03762>`_.
-
-    Multi-Head Attention is defined as:
-
-    .. math::
-        \text{MultiHead}(Q, K, V) = \text{Concat}(head_1,\dots,head_h)W^O
-
-    where :math:`head_i = \text{Attention}(QW_i^Q, KW_i^K, VW_i^V)`.
-
-    ``nn.MultiHeadAttention`` will use the optimized implementations of
-    ``scaled_dot_product_attention()`` when possible.
-
-    In addition to support for the new ``scaled_dot_product_attention()``
-    function, for speeding up Inference, MHA will use
-    fastpath inference with support for Nested Tensors, iff:
-
-    - self attention is being computed (i.e., ``query``, ``key``, and ``value`` are the same tensor).
-    - inputs are batched (3D) with ``batch_first==True``
-    - Either autograd is disabled (using ``torch.inference_mode`` or ``torch.no_grad``) or no tensor argument ``requires_grad``
-    - training is disabled (using ``.eval()``)
-    - ``add_bias_kv`` is ``False``
-    - ``add_zero_attn`` is ``False``
-    - ``kdim`` and ``vdim`` are equal to ``embed_dim``
-    - if a `NestedTensor <https://pytorch.org/docs/stable/nested.html>`_ is passed, neither ``key_padding_mask``
-      nor ``attn_mask`` is passed
-    - autocast is disabled
-
-    If the optimized inference fastpath implementation is in use, a
-    `NestedTensor <https://pytorch.org/docs/stable/nested.html>`_ can be passed for
-    ``query``/``key``/``value`` to represent padding more efficiently than using a
-    padding mask. In this case, a `NestedTensor <https://pytorch.org/docs/stable/nested.html>`_
-    will be returned, and an additional speedup proportional to the fraction of the input
-    that is padding can be expected.
-
-    Args:
-        embed_dim: Total dimension of the model.
-        num_heads: Number of parallel attention heads. Note that ``embed_dim`` will be split
-            across ``num_heads`` (i.e. each head will have dimension ``embed_dim // num_heads``).
-        dropout: Dropout probability on ``attn_output_weights``. Default: ``0.0`` (no dropout).
-        bias: If specified, adds bias to input / output projection layers. Default: ``True``.
-        add_bias_kv: If specified, adds bias to the key and value sequences at dim=0. Default: ``False``.
-        add_zero_attn: If specified, adds a new batch of zeros to the key and value sequences at dim=1.
-            Default: ``False``.
-        kdim: Total number of features for keys. Default: ``None`` (uses ``kdim=embed_dim``).
-        vdim: Total number of features for values. Default: ``None`` (uses ``vdim=embed_dim``).
-        batch_first: If ``True``, then the input and output tensors are provided
-            as (batch, seq, feature). Default: ``False`` (seq, batch, feature).
-
-    Examples::
-
-        >>> # xdoctest: +SKIP
-        >>> multihead_attn = nn.MultiheadAttention(embed_dim, num_heads)
-        >>> attn_output, attn_output_weights = multihead_attn(query, key, value)
-
-    .. _`FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness`:
-         https://arxiv.org/abs/2205.14135
-
-    """
-
-    __constants__ = ["batch_first"]
-    bias_k: Optional[torch.Tensor]
-    bias_v: Optional[torch.Tensor]
-
-    def __init__(
-        self,
+class CustomMultiHeadAttention(MultiheadAttention):
+    def __init__(self,
         embed_dim,
         num_heads,
         dropout=0.0,
@@ -134,85 +43,23 @@ class VanillaMultiheadAttention(Module):
         device=None,
         dtype=None,
     ) -> None:
-        if embed_dim <= 0 or num_heads <= 0:
-            raise ValueError(
-                f"embed_dim and num_heads must be greater than 0,"
-                f" got embed_dim={embed_dim} and num_heads={num_heads} instead"
-            )
-        factory_kwargs = {"device": device, "dtype": dtype}
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.kdim = kdim if kdim is not None else embed_dim
-        self.vdim = vdim if vdim is not None else embed_dim
-        self._qkv_same_embed_dim = self.kdim == embed_dim and self.vdim == embed_dim
+        self.use_block_mask = False
+        self.block_mask = None
 
-        self.num_heads = num_heads
-        self.dropout = dropout
-        self.batch_first = batch_first
-        self.head_dim = embed_dim // num_heads
-        assert (
-            self.head_dim * num_heads == self.embed_dim
-        ), "embed_dim must be divisible by num_heads"
-
-        if not self._qkv_same_embed_dim:
-            self.q_proj_weight = Parameter(
-                torch.empty((embed_dim, embed_dim), **factory_kwargs)
-            )
-            self.k_proj_weight = Parameter(
-                torch.empty((embed_dim, self.kdim), **factory_kwargs)
-            )
-            self.v_proj_weight = Parameter(
-                torch.empty((embed_dim, self.vdim), **factory_kwargs)
-            )
-            self.register_parameter("in_proj_weight", None)
-        else:
-            self.in_proj_weight = Parameter(
-                torch.empty((3 * embed_dim, embed_dim), **factory_kwargs)
-            )
-            self.register_parameter("q_proj_weight", None)
-            self.register_parameter("k_proj_weight", None)
-            self.register_parameter("v_proj_weight", None)
-
-        if bias:
-            self.in_proj_bias = Parameter(torch.empty(3 * embed_dim, **factory_kwargs))
-        else:
-            self.register_parameter("in_proj_bias", None)
-        self.out_proj = NonDynamicallyQuantizableLinear(
-            embed_dim, embed_dim, bias=bias, **factory_kwargs
+        super().__init__(
+            embed_dim,
+            num_heads,
+            dropout=dropout,
+            bias=bias,
+            add_bias_kv=add_bias_kv,
+            add_zero_attn=add_zero_attn,
+            kdim=kdim,
+            vdim=vdim,
+            batch_first=batch_first,
+            device=device,
+            dtype=dtype,
         )
-
-        if add_bias_kv:
-            self.bias_k = Parameter(torch.empty((1, 1, embed_dim), **factory_kwargs))
-            self.bias_v = Parameter(torch.empty((1, 1, embed_dim), **factory_kwargs))
-        else:
-            self.bias_k = self.bias_v = None
-
-        self.add_zero_attn = add_zero_attn
-
-        self._reset_parameters()
-
-    def _reset_parameters(self):
-        if self._qkv_same_embed_dim:
-            xavier_uniform_(self.in_proj_weight)
-        else:
-            xavier_uniform_(self.q_proj_weight)
-            xavier_uniform_(self.k_proj_weight)
-            xavier_uniform_(self.v_proj_weight)
-
-        if self.in_proj_bias is not None:
-            constant_(self.in_proj_bias, 0.0)
-            constant_(self.out_proj.bias, 0.0)
-        if self.bias_k is not None:
-            xavier_normal_(self.bias_k)
-        if self.bias_v is not None:
-            xavier_normal_(self.bias_v)
-
-    def __setstate__(self, state):
-        # Support loading old MultiheadAttention checkpoints generated by v1.1.0
-        if "_qkv_same_embed_dim" not in state:
-            state["_qkv_same_embed_dim"] = True
-
-        super().__setstate__(state)
+        
 
     def forward(
         self,
@@ -285,6 +132,10 @@ class VanillaMultiheadAttention(Module):
             .. note::
                 `batch_first` argument is ignored for unbatched inputs.
         """  # noqa: B950
+        if self.use_block_mask:
+            self.block_mask = attn_mask
+            attn_mask = None
+
         why_not_fast_path = ""
         if (
             (attn_mask is not None and torch.is_floating_point(attn_mask))
@@ -388,6 +239,7 @@ class VanillaMultiheadAttention(Module):
                 )
 
                 if self.in_proj_bias is not None and self.in_proj_weight is not None:
+                    
                     return torch._native_multi_head_attention(
                         query,
                         key,
@@ -422,6 +274,7 @@ class VanillaMultiheadAttention(Module):
                 query, key, value = (x.transpose(1, 0) for x in (query, key, value))
 
         if not self._qkv_same_embed_dim:
+           
             attn_output, attn_output_weights = F.multi_head_attention_forward(
                 query,
                 key,
@@ -448,6 +301,7 @@ class VanillaMultiheadAttention(Module):
                 is_causal=is_causal,
             )
         else:
+            
             attn_output, attn_output_weights = multi_head_attention_forward(
                 query,
                 key,
@@ -468,64 +322,47 @@ class VanillaMultiheadAttention(Module):
                 attn_mask=attn_mask,
                 average_attn_weights=average_attn_weights,
                 is_causal=is_causal,
+                block_mask=self.block_mask,
             )
         if self.batch_first and is_batched:
             return attn_output.transpose(1, 0), attn_output_weights
         else:
             return attn_output, attn_output_weights
+        
 
 
-    def merge_masks(
-        self,
-        attn_mask: Optional[Tensor],
-        key_padding_mask: Optional[Tensor],
-        query: Tensor,
-    ) -> Tuple[Optional[Tensor], Optional[int]]:
-        r"""Determine mask type and combine masks if necessary.
 
-        If only one mask is provided, that mask
-        and the corresponding mask type will be returned. If both masks are provided, they will be both
-        expanded to shape ``(batch_size, num_heads, seq_len, seq_len)``, combined with logical ``or``
-        and mask type 2 will be returned
-        Args:
-            attn_mask: attention mask of shape ``(seq_len, seq_len)``, mask type 0
-            key_padding_mask: padding mask of shape ``(batch_size, seq_len)``, mask type 1
-            query: query embeddings of shape ``(batch_size, seq_len, embed_dim)``
-        Returns:
-            merged_mask: merged mask
-            mask_type: merged mask type (0, 1, or 2)
-        """
-        mask_type: Optional[int] = None
-        merged_mask: Optional[Tensor] = None
 
-        if key_padding_mask is not None:
-            mask_type = 1
-            merged_mask = key_padding_mask
 
-        if attn_mask is not None:
-            # In this branch query can't be a nested tensor, so it has a shape
-            batch_size, seq_len, _ = query.shape
-            mask_type = 2
+def _check_arg_device(x: Optional[torch.Tensor]) -> bool:
+    if x is not None:
+        return x.device.type in [
+            "cpu",
+            "cuda",
+            torch.utils.backend_registration._privateuse1_backend_name,
+        ]
+    return True
 
-            # Always expands attn_mask to 4D
-            if attn_mask.dim() == 3:
-                attn_mask_expanded = attn_mask.view(batch_size, -1, seq_len, seq_len)
-            else:  # attn_mask.dim() == 2:
-                attn_mask_expanded = attn_mask.view(1, 1, seq_len, seq_len).expand(
-                    batch_size, self.num_heads, -1, -1
-                )
-            merged_mask = attn_mask_expanded
 
-            if key_padding_mask is not None:
-                key_padding_mask_expanded = key_padding_mask.view(
-                    batch_size, 1, 1, seq_len
-                ).expand(-1, self.num_heads, -1, -1)
-                merged_mask = attn_mask_expanded + key_padding_mask_expanded
+def _arg_requires_grad(x: Optional[torch.Tensor]) -> bool:
+    if x is not None:
+        return x.requires_grad
+    return False
 
-        # no attn_mask and no key_padding_mask, returns None, None
-        return merged_mask, mask_type
-    
-    
+
+def _is_make_fx_tracing():
+    if not torch.jit.is_scripting():
+        torch_dispatch_mode_stack = (
+            torch.utils._python_dispatch._get_current_dispatch_mode_stack()
+        )
+        return any(
+            type(x) == torch.fx.experimental.proxy_tensor.ProxyTorchDispatchMode
+            for x in torch_dispatch_mode_stack
+        )
+    else:
+        return False
+
+
 def multi_head_attention_forward(
     query: Tensor,
     key: Tensor,
@@ -552,6 +389,7 @@ def multi_head_attention_forward(
     static_v: Optional[Tensor] = None,
     average_attn_weights: bool = True,
     is_causal: bool = False,
+    block_mask: Optional[Tensor] = None,
 ) -> Tuple[Tensor, Optional[Tensor]]:
     r"""Forward method for MultiHeadAttention.
 
@@ -670,6 +508,7 @@ def multi_head_attention_forward(
             static_k=static_k,
             static_v=static_v,
             average_attn_weights=average_attn_weights,
+            block_mask=block_mask,
         )
 
     is_batched = _mha_shape_check(
@@ -864,10 +703,18 @@ def multi_head_attention_forward(
 
     # merge key padding and attention masks
     if key_padding_mask is not None:
-        assert key_padding_mask.shape == (
-            bsz,
-            src_len,
-        ), f"expecting key_padding_mask shape of {(bsz, src_len)}, but got {key_padding_mask.shape}"
+        if not torch.jit.is_scripting():
+            torch._check_with(
+                AssertionError,
+                key_padding_mask.shape[0] == bsz,
+                None,
+            )
+            torch._check_with(
+                AssertionError,
+                key_padding_mask.shape[1] == src_len,
+                None,
+            )
+
         key_padding_mask = (
             key_padding_mask.view(bsz, 1, 1, src_len)
             .expand(-1, num_heads, -1, -1)
@@ -936,8 +783,14 @@ def multi_head_attention_forward(
         k = k.view(bsz, num_heads, src_len, head_dim)
         v = v.view(bsz, num_heads, src_len, head_dim)
 
+        """
         attn_output = scaled_dot_product_attention(
             q, k, v, attn_mask, dropout_p, is_causal
+        )
+        """
+        compiled_flex_attention = FlexAttentionSingleton().get_compiled_function(flex_attention)
+        attn_output = compiled_flex_attention(
+            q, k, v, block_mask=block_mask
         )
         attn_output = (
             attn_output.permute(2, 0, 1, 3).contiguous().view(bsz * tgt_len, embed_dim)

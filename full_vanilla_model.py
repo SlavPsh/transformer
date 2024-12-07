@@ -146,7 +146,7 @@ class TransformerRegressor(Module):
         self.input_layer = Linear(input_size, d_model)
 
         encoder_layers = TransformerEncoderLayer(d_model, n_head, dim_feedforward, dropout, batch_first=True)
-        self.encoder = TransformerEncoder(encoder_layers, num_encoder_layers)
+        self.encoder = TransformerEncoder(encoder_layers, num_encoder_layers, enable_nested_tensor=False)
         self.decoder = Linear(d_model, output_size)
         self.num_heads = n_head
         self.att_mask_used = False
@@ -162,16 +162,13 @@ class TransformerRegressor(Module):
         self.wandb_logger = wandb_logger
 
     
-    def forward(self, input_coord):
-        
-        # Here we use only 3 coordinates x,y,z as input to the model
-        x = self.input_layer(input_coord)  # Transform coordinates part of the input into d_model space
-
-        memory = self.encoder(src=x)
-       
-        if torch.isnan(memory).any(): 
-            logging.error("Memory contains NaN values. Check attention mask.")
+    def forward(self, input, padding_mask):
+        x = self.input_layer(input)
+        memory = self.encoder(src=x, src_key_padding_mask=padding_mask)
         out = self.decoder(memory)
+        #if torch.isnan(memory).any(): 
+        #    logging.error("Memory contains NaN values. Check attention mask.")
+        #out = self.decoder(memory)
         return out
     
     
@@ -286,8 +283,8 @@ class TransformerEncoderLayer(Module):
         
 
         self.self_attn = VanillaMultiheadAttention(
-            d_model,
-            nhead,
+            embed_dim=d_model,
+            num_heads=nhead,
             dropout=dropout,
             bias=bias,
             batch_first=batch_first,
