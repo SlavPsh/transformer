@@ -53,10 +53,8 @@ def setup_training(config, device):
         ).to(device)
     elif config_model_type == 'flex_attention':
         from custom_model import TransformerRegressor
-        torch._dynamo.config.cache_size_limit = 1000
+        
 
-        # Compile the flex_attention function
-        flex_attention = torch.compile(flex_attention, dynamic=False)
 
         # For better performance, you can use:
         # flex_attention = torch.compile(_flex_attention, dynamic=False, mode="max-autotune-no-cudagraphs")
@@ -147,16 +145,18 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
         # Make prediction
         padding_mask = (hits == PAD_TOKEN).all(dim=2)
         track_params = torch.unsqueeze(track_params[~padding_mask], 0)
+        
 
-        if config_model_type == 'flash_attention' or config_model_type == 'flex_attention':
-            hits = torch.unsqueeze(hits[~padding_mask], 0)
-            
+        if config_model_type == 'flash_attention' or config_model_type == 'flex_attention':      
             with torch.amp.autocast('cuda'):
                 if config_model_type == 'flex_attention':
                     # TODO: Implement flex_attention
                     flex_padding_mask = generate_padding_mask(hits_seq_length)
-                    pred = model(hits, padding_mask, flex_padding_mask)
+                    pred = model(hits, flex_padding_mask)
+                    pred = torch.unsqueeze(pred[~padding_mask], 0)
+                    
                 else:
+                    hits = torch.unsqueeze(hits[~padding_mask], 0)
                     pred = model(hits, padding_mask)
                 loss = loss_fn(pred, track_params)
             # Update loss and scaler after a "batch"
@@ -210,11 +210,17 @@ def evaluate(model, validation_loader, loss_fn, device, config):
             track_params = torch.unsqueeze(track_params[~padding_mask], 0)
 
             if config_model_type == 'flash_attention' or config_model_type == 'flex_attention':
-                hits = torch.unsqueeze(hits[~padding_mask], 0)
-                
                 
                 with torch.amp.autocast('cuda'):
-                    pred = model(hits, padding_mask)
+                    if config_model_type == 'flex_attention':
+                    # TODO: Implement flex_attention
+                        flex_padding_mask = generate_padding_mask(hits_seq_length)
+                        pred = model(hits, flex_padding_mask)
+                        pred = torch.unsqueeze(pred[~padding_mask], 0)
+                    else:
+                        hits = torch.unsqueeze(hits[~padding_mask], 0)
+                        pred = model(hits, padding_mask)
+                    
                     loss = loss_fn(pred, track_params)
 
                 # Update loss after a "batch"
@@ -291,9 +297,9 @@ def main(config_path):
     
     config_model_type = config['model']['type']
     normalize = False
-    if config_model_type == 'flash_attention':
-        logging.info("Model type: FlashAttention")
+    if config_model_type == 'flash_attention' or config_model_type == 'flex_attention':
         logging.info(f"FlashAttention available: {torch.backends.cuda.flash_sdp_enabled()}")
+        logging.info(f"Normalization of input data is set to True")
         normalize = True
 
     hits_data, hits_data_seq_lengths, hits_masking, track_params_data, track_classes_data = load_trackml_data(data=data_path, normalize=normalize)
@@ -302,9 +308,9 @@ def main(config_path):
     batch_size = config['training']['batch_size']
     scaler = None
     
-    if config_model_type == 'flash_attention':
+    if config_model_type == 'flash_attention' or config_model_type == 'flex_attention':
         # Flash attention does not support batch size > 1
-        batch_size = 1
+        #batch_size = 1
         scaler = torch.amp.GradScaler('cuda')
     
     train_loader, valid_loader, _ = get_dataloaders(dataset,

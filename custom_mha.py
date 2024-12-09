@@ -26,7 +26,29 @@ from torch.overrides import (
     has_torch_function,
 )
 
-from custom_model import FlexAttentionSingleton
+import threading
+class FlexAttentionSingleton:
+    """Singleton class to compile FlexAttention function once and reuse it."""
+
+    _instance = None
+    _lock = threading.Lock()  # Ensures thread safety
+
+    def __new__(cls):
+        # Ensure only one instance is created
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._compiled_function = None  # Initialize compiled function
+        return cls._instance
+
+    def get_compiled_function(self, function):
+        """Compile the function if not already compiled and return it."""
+        if self._compiled_function is None:
+            print("Compiling the function for the first time...")
+            torch._dynamo.config.cache_size_limit = 1000
+            self._compiled_function = torch.compile(function)
+        return self._compiled_function
 
 
 class CustomMultiHeadAttention(MultiheadAttention):
@@ -43,9 +65,6 @@ class CustomMultiHeadAttention(MultiheadAttention):
         device=None,
         dtype=None,
     ) -> None:
-        self.use_block_mask = False
-        self.block_mask = None
-
         super().__init__(
             embed_dim,
             num_heads,
@@ -71,6 +90,7 @@ class CustomMultiHeadAttention(MultiheadAttention):
         attn_mask: Optional[Tensor] = None,
         average_attn_weights: bool = True,
         is_causal: bool = False,
+        flex_mask=None
     ) -> Tuple[Tensor, Optional[Tensor]]:
         r"""Compute attention outputs using query, key, and value embeddings.
 
@@ -132,9 +152,6 @@ class CustomMultiHeadAttention(MultiheadAttention):
             .. note::
                 `batch_first` argument is ignored for unbatched inputs.
         """  # noqa: B950
-        if self.use_block_mask:
-            self.block_mask = attn_mask
-            attn_mask = None
 
         why_not_fast_path = ""
         if (
@@ -322,7 +339,7 @@ class CustomMultiHeadAttention(MultiheadAttention):
                 attn_mask=attn_mask,
                 average_attn_weights=average_attn_weights,
                 is_causal=is_causal,
-                block_mask=self.block_mask,
+                block_mask=flex_mask,
             )
         if self.batch_first and is_batched:
             return attn_output.transpose(1, 0), attn_output_weights
