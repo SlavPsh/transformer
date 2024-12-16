@@ -115,7 +115,7 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
         # Make prediction
         padding_mask = (hits == PAD_TOKEN).all(dim=2)
     
-        # TODO add autocast here
+        # TODO add autocast here to check if it changes the dot product calculation
         if config_model_type == 'flex_attention':
             from custom_model import generate_padding_mask
             flex_padding_mask = generate_padding_mask(hits_seq_length)

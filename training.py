@@ -369,6 +369,8 @@ def main(config_path):
         val_losses.append(val_loss)
 
         memory_stats = wandb_logger.get_system_memory_stats()
+        logging.info(f"Memory stats: {memory_stats}")
+
         wandb_logger.log({'train/train_loss' : train_loss, 'train/epoch' : epoch, 'train/validation loss' : val_loss, **memory_stats})
 
         if val_loss < min_val_loss:

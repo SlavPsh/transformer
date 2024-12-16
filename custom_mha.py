@@ -152,7 +152,7 @@ class CustomMultiHeadAttention(MultiheadAttention):
             .. note::
                 `batch_first` argument is ignored for unbatched inputs.
         """  # noqa: B950
-
+        
         why_not_fast_path = ""
         if (
             (attn_mask is not None and torch.is_floating_point(attn_mask))
@@ -804,12 +804,13 @@ def multi_head_attention_forward(
         attn_output = scaled_dot_product_attention(
             q, k, v, attn_mask, dropout_p, is_causal
         )
-        """
         
+        """
         compiled_flex_attention = FlexAttentionSingleton().get_compiled_function(flex_attention)
         attn_output = compiled_flex_attention(
             q, k, v, block_mask=block_mask
         )
+        
 
         attn_output = (
             attn_output.permute(2, 0, 1, 3).contiguous().view(bsz * tgt_len, embed_dim)

@@ -159,6 +159,7 @@ class CustomTransformerEncoderLayer(nn.TransformerEncoderLayer):
                 merged_mask, mask_type = self.self_attn.merge_masks(
                     src_mask, src_key_padding_mask, src
                 )
+                
                 return torch._transformer_encoder_layer_fwd(
                     src,
                     self.self_attn.embed_dim,
@@ -247,6 +248,7 @@ class CustomTransformerEncoder(nn.TransformerEncoder):
         Shape:
             see the docs in :class:`~torch.nn.Transformer`.
         """
+        
         src_key_padding_mask = F._canonical_mask(
             mask=src_key_padding_mask,
             mask_name="src_key_padding_mask",
@@ -386,6 +388,7 @@ class TransformerRegressor(nn.Module):
                 self.wandb_logger.initialize()
 
     def forward(self, input, flex_padding_mask):
+        
         # TODO: exclude input and output layer compute for padding tokens
         x = self.input_layer(input)
         B, S = input.size(0), input.size(1)
