@@ -16,17 +16,28 @@ import wandb
 
 def load_model(config, device):
 
-    config_flash_attention = config['model']['use_flash_attention']
-    config_att_mask = config['model']['use_att_mask']
     config_model_type = config['model']['type']
+    logging.info(f"Model type: {config_model_type}")
     
-    sweep_att_mask = wandb.config.use_att_mask if 'use_att_mask' in wandb.config else config_att_mask
-    sweep_flash_attention = wandb.config.use_flash_attention if 'use_flash_attention' in wandb.config else config_flash_attention
+    #sweep_att_mask = wandb.config.use_att_mask if 'use_att_mask' in wandb.config else config_att_mask
+    #sweep_flash_attention = wandb.config.use_flash_attention if 'use_flash_attention' in wandb.config else config_flash_attention
 
-    if config_model_type == 'flex_attention':
-        from flex_attn_model import TransformerRegressor
-        logging.info("Loading model with flex attention")
-        # model
+    if config_model_type == 'vanilla':
+            from vanilla_model import TransformerRegressor
+
+            model = TransformerRegressor(
+                num_encoder_layers = config['model']['num_encoder_layers'],
+                d_model = config['model']['d_model'],
+                n_head=config['model']['n_head'],
+                input_size = config['model']['input_size'],
+                output_size = config['model']['output_size'],
+                dim_feedforward=config['model']['dim_feedforward'],
+                dropout=config['model']['dropout']
+            ).to(device)
+    elif config_model_type == 'flash_attention':
+        from flash_model import TransformerRegressor
+        print("FlashAttention available:", torch.backends.cuda.flash_sdp_enabled())
+
         model = TransformerRegressor(
             num_encoder_layers = config['model']['num_encoder_layers'],
             d_model = config['model']['d_model'],
@@ -36,10 +47,12 @@ def load_model(config, device):
             dim_feedforward=config['model']['dim_feedforward'],
             dropout=config['model']['dropout']
         ).to(device)
-    else: 
-        from model import TransformerRegressor
-        logging.info("Loading model with standard attention")
-        # model
+    elif config_model_type == 'flex_attention':
+        from custom_model import TransformerRegressor
+
+        # For better performance, you can use:
+        # flex_attention = torch.compile(_flex_attention, dynamic=False, mode="max-autotune-no-cudagraphs")
+
         model = TransformerRegressor(
             num_encoder_layers = config['model']['num_encoder_layers'],
             d_model = config['model']['d_model'],
@@ -47,9 +60,9 @@ def load_model(config, device):
             input_size = config['model']['input_size'],
             output_size = config['model']['output_size'],
             dim_feedforward=config['model']['dim_feedforward'],
-            dropout=config['model']['dropout'],
-            use_att_mask=sweep_att_mask
+            dropout=config['model']['dropout']
         ).to(device)
+
 
     if 'checkpoint_path' not in config['model'] or not config['model']['checkpoint_path']:
         logging.error('Checkpoint path must be provided for evaluation.')
@@ -72,24 +85,25 @@ def load_model(config, device):
             model.set_use_att_mask(False)
             logging.info(f"Using attention mask is set to False")
         """ 
-        logging.info(f"Flash attention is set to {sweep_flash_attention}")
         logging.info(f"Loaded checkpoint from {config['model']['checkpoint_path']}")
         logging.info(f"Loaded model_state of epoch {epoch}. Ignoring optimizer_state. Starting evaluation from checkpoint.")
 
     model.eval()
     return model 
 
-def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, wandb_logger=None):
+def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, config, wandb_logger=None):
     '''
     Evaluates the network on the test data. Returns the predictions and scores.
     '''
     # Get the network in evaluation mode
+    config_model_type = config['model']['type']
     torch.set_grad_enabled(False)
     model.eval()
     predictions = {}
     score, edge_efficiency, perfects, doubles, lhcs = 0., 0., 0., 0., 0.
 
     # Initialize a dictionary to store bin scores for all events
+    counter = 0
     combined_bin_scores = {param: [] for param in bin_ranges.keys()}
 
     for data in test_loader:
@@ -100,39 +114,57 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
  
         # Make prediction
         padding_mask = (hits == PAD_TOKEN).all(dim=2)
-        pred = model(hits, hits_seq_length)
+    
+        # TODO add autocast here
+        if config_model_type == 'flex_attention':
+            from custom_model import generate_padding_mask
+            flex_padding_mask = generate_padding_mask(hits_seq_length)
+            pred = model(hits,  flex_padding_mask)
+            pred = torch.unsqueeze(pred[~padding_mask], 0)
+            
+        elif config_model_type == 'flash_attention':
+            hits = torch.unsqueeze(hits[~padding_mask], 0)
+            pred = model(hits, padding_mask)
+        else:
+            pred = model(hits, padding_mask=padding_mask)
+            pred = torch.unsqueeze(pred[~padding_mask], 0)
 
-        pred = torch.unsqueeze(pred[~padding_mask], 0)
 
         cluster_labels = clustering(pred, min_cl_size, min_samples)
 
+        
         hits = torch.unsqueeze(hits[~padding_mask], 0)
         track_params = torch.unsqueeze(track_params[~padding_mask], 0)
         track_labels = torch.unsqueeze(track_labels[~padding_mask], 0)
+        
 
         event_score, scores, nr_particles, predicted_tracks, true_tracks = calc_score_trackml(cluster_labels[0], track_labels[0])
-        event_edge_efficiency = calc_edge_efficiency(cluster_labels[0], track_labels[0])
+        #event_edge_efficiency = calc_edge_efficiency(cluster_labels[0], track_labels[0])
 
         score += event_score
-        edge_efficiency += event_edge_efficiency
+        if counter % 100 == 0:
+            logging.info(f'Event {counter} score {event_score}')
+        counter += 1
+        #edge_efficiency += event_edge_efficiency
         perfects += scores[0]
         doubles += scores[1]
         lhcs += scores[2]
 
-        bin_scores = calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges)
-        for param, scores in bin_scores.items():
-            combined_bin_scores[param].append(scores)
+        #bin_scores = calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges)
+        #for param, scores in bin_scores.items():
+        #    combined_bin_scores[param].append(scores)
            
 
         if wandb_logger != None:
             memory_stats = wandb_logger.get_system_memory_stats()
             metrics = {'batch/event_id[0]' : event_id[0],
                        'batch/event score' : event_score, 
-                       'batch/edge_efficiency' : event_edge_efficiency,
+                       
                        'batch/num_hits_per_event' : len(hits[0]),
                        'batch/num_particles_per_event' : nr_particles,
                        **memory_stats
                        }
+            #'batch/edge_efficiency' : event_edge_efficiency,
             wandb_logger.log(metrics)
         
         # Free up memory
@@ -143,7 +175,7 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
     total_average_score = score/len(test_loader)
     total_average_edge_efficiency = edge_efficiency/len(test_loader)
 
-    wandb_logger.plot_binned_scores(combined_bin_scores, total_average_score)
+    #wandb_logger.plot_binned_scores(combined_bin_scores, total_average_score)
 
     return total_average_score, total_average_edge_efficiency, perfects/len(test_loader), doubles/len(test_loader), lhcs/len(test_loader)
 
@@ -170,6 +202,9 @@ def main(config_path):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f"Device: {device}")
 
+    logging.info(f" ==== Model : ====")
+    logging.info(config['model'])
+
     torch.manual_seed(37)  # for reproducibility
     data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
     logging.info(f"Loading data from {data_path} ...")
@@ -195,7 +230,7 @@ def main(config_path):
     min_sam = wandb.config.min_samples if 'min_samples' in wandb.config else 3
     bin_ranges = config['bin_ranges']
 
-    score, edge_efficiency, perfect, double_maj, lhc = test_main(model, test_loader, cl_size, min_sam, bin_ranges, device, wandb_logger)
+    score, edge_efficiency, perfect, double_maj, lhc = test_main(model, test_loader, cl_size, min_sam, bin_ranges, device, config, wandb_logger)
     print(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}, Edge efficiency {edge_efficiency}', flush=True)
     logging.info(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}, Edge efficiency {edge_efficiency}')
     #print(perfect, double_maj, lhc, flush=True)

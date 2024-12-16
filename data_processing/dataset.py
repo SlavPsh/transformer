@@ -30,7 +30,7 @@ def get_dataloaders(dataset, train_frac, valid_frac, test_frac, batch_size, drop
 
     return train_loader, valid_loader, test_loader
 
-def load_trackml_data(data, normalize=False, chunking=False):
+def load_trackml_data(data, normalize=True, chunking=False):
     """
     Function for reading .csv file with TrackML data and creating tensors
     containing the hits and ground truth information from it.
@@ -42,12 +42,7 @@ def load_trackml_data(data, normalize=False, chunking=False):
     if not chunking:
         data = pd.read_csv(data)
 
-    # Normalize the data if applicable
-    if normalize:
-        for col in ["x", "y", "z", "px", "py", "pz", "q"]:
-            mean = data[col].mean()
-            std = data[col].std()
-            data[col] = (data[col] - mean)/std
+
 
     # Shuffling the data and grouping by event ID, add random state for reproducibility
     shuffled_data = data.sample(frac=1, random_state=37)
@@ -61,6 +56,14 @@ def load_trackml_data(data, normalize=False, chunking=False):
     shuffled_data["sin_phi"] = np.sin(shuffled_data["phi"])
     shuffled_data["cos_phi"] = np.cos(shuffled_data["phi"])
     shuffled_data['eta'] = -np.log(np.tan(shuffled_data['theta']/2.))
+
+        # Normalize the data if applicable
+    if normalize:
+        for col in ["x", "y", "z", "theta"]:
+            mean = shuffled_data[col].mean()
+            std = shuffled_data[col].std()
+            shuffled_data[col] = (shuffled_data[col] - mean)/std
+
     data_grouped_by_event = shuffled_data.groupby("event_id")
     max_num_hits = data_grouped_by_event.size().max() + 1
     # Round up to the next multiple of 128 for flex attention
@@ -114,7 +117,7 @@ def load_trackml_data(data, normalize=False, chunking=False):
 
     # Stack them together into one tensor
     hits_data = torch.tensor(np.stack(grouped_hits_data))
-    hits_data_seq_lengths = torch.tensor(sequence_lengths) 
+    hits_data_seq_lengths = torch.tensor(sequence_lengths, dtype=torch.long) 
     hits_data_for_masking = torch.tensor(np.stack(grouped_masking_data.values))
     track_params_data = torch.tensor(np.stack(grouped_track_params_data.values))
     hit_particle_data = torch.tensor(np.stack(grouped_particle_data.values))

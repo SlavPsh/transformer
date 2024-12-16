@@ -805,10 +805,12 @@ def multi_head_attention_forward(
             q, k, v, attn_mask, dropout_p, is_causal
         )
         """
+        
         compiled_flex_attention = FlexAttentionSingleton().get_compiled_function(flex_attention)
         attn_output = compiled_flex_attention(
             q, k, v, block_mask=block_mask
         )
+
         attn_output = (
             attn_output.permute(2, 0, 1, 3).contiguous().view(bsz * tgt_len, embed_dim)
         )

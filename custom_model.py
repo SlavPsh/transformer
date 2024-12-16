@@ -388,8 +388,9 @@ class TransformerRegressor(nn.Module):
     def forward(self, input, flex_padding_mask):
         # TODO: exclude input and output layer compute for padding tokens
         x = self.input_layer(input)
-        B, S = x.size(0), x.size(1)
-        block_mask = create_block_mask(flex_padding_mask, B, None, S, S)   
+        B, S = input.size(0), input.size(1)
+        block_mask = create_block_mask(flex_padding_mask, B, None, S, S , _compile=True)   
+
         memory = self.encoder(src=x, flex_mask=block_mask)
         out = self.decoder(memory)
         #if torch.isnan(memory).any(): 
@@ -399,4 +400,32 @@ class TransformerRegressor(nn.Module):
     
     def attach_wandb_logger(self, wandb_logger):
         self.wandb_logger = wandb_logger
+
+
+def generate_padding_mask(lengths):
+    """Generates mask mods that apply to inputs to flex attention in the sequence stacked
+
+    """
+    def padding_mask(b, h, q_idx, kv_idx):
+        #rows_mask = q_idx < lengths[b]
+        cols_mask = kv_idx < lengths[b]
+
+        return cols_mask
+
+    return padding_mask
+
+def generate_sliding_window_padding_mask(lengths, SLIDING_WINDOW=128):
+    """Generates mask mods that apply to inputs to flex attention in the sequence stacked
+
+    """
+    def padding_mask(b, h, q_idx, kv_idx):
+        L = lengths[b]
+        # Can we pad query here as well?
+        padding_mask = (kv_idx < L)
+        half_L = L // 2
+        d = (kv_idx - q_idx) % L
+        d = torch.where(d > half_L, L - d, d)
+
+        return padding_mask & (d <= SLIDING_WINDOW)
+    return padding_mask
     

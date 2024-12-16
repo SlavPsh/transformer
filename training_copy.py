@@ -152,18 +152,18 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
         
 
         if config_model_type == 'flash_attention' or config_model_type == 'flex_attention':      
-            with torch.amp.autocast('cuda'):
-                if config_model_type == 'flex_attention':
-                    # Shall we remove import and padding mask generation from here?
-                    from custom_model import generate_padding_mask
-                    flex_padding_mask = generate_padding_mask(hits_seq_length)
-                    pred = model(hits,  flex_padding_mask)
-                    pred = torch.unsqueeze(pred[~padding_mask], 0)
-                    
-                else:
-                    hits = torch.unsqueeze(hits[~padding_mask], 0)
-                    pred = model(hits, padding_mask)
-                loss = loss_fn(pred, track_params)
+
+            if config_model_type == 'flex_attention':
+                # Shall we remove import and padding mask generation from here?
+                from custom_model import generate_padding_mask
+                flex_padding_mask = generate_padding_mask(hits_seq_length)
+                pred = model(hits,  flex_padding_mask)
+                pred = torch.unsqueeze(pred[~padding_mask], 0)
+                
+            else:
+                hits = torch.unsqueeze(hits[~padding_mask], 0)
+                pred = model(hits, padding_mask)
+            loss = loss_fn(pred, track_params)
             # Update loss and scaler after a "batch"
             intermid_loss += loss
             if (i+1) % 4 == 0:
@@ -216,17 +216,16 @@ def evaluate(model, validation_loader, loss_fn, device, config):
 
             if config_model_type == 'flash_attention' or config_model_type == 'flex_attention':
                 
-                with torch.amp.autocast('cuda'):
-                    if config_model_type == 'flex_attention':
-                        from custom_model import generate_padding_mask
-                        flex_padding_mask = generate_padding_mask(hits_seq_length)
-                        pred = model(hits,  flex_padding_mask)
-                        pred = torch.unsqueeze(pred[~padding_mask], 0)
-                    else:
-                        hits = torch.unsqueeze(hits[~padding_mask], 0)
-                        pred = model(hits, padding_mask)
-                    
-                    loss = loss_fn(pred, track_params)
+                if config_model_type == 'flex_attention':
+                    from custom_model import generate_padding_mask
+                    flex_padding_mask = generate_padding_mask(hits_seq_length)
+                    pred = model(hits,  flex_padding_mask)
+                    pred = torch.unsqueeze(pred[~padding_mask], 0)
+                else:
+                    hits = torch.unsqueeze(hits[~padding_mask], 0)
+                    pred = model(hits, padding_mask)
+                
+                loss = loss_fn(pred, track_params)
 
                 # Update loss after a "batch"
                 intermid_loss += loss
@@ -299,8 +298,6 @@ def main(config_path):
     data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
     
     logging.info(f'Loading data from {data_path} ...')
-    logging.info(f" ==== Model : ====")
-    logging.info(config['model'])
     
     config_model_type = config['model']['type']
 

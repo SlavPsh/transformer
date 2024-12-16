@@ -90,7 +90,7 @@ class WandbLogger:
 
         self.log({'gradient_norm': total_norm})
 
-    def save_model(self, model, model_name, optimizer, epoch, output_dir):
+    def save_model(self, model, model_name, optimizer, scheduler, epoch, output_dir):
         if not self.initialized:
             self.initialize()
         file_path = os.path.join(output_dir, model_name)
@@ -98,6 +98,7 @@ class WandbLogger:
         checkpoint = {
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state': scheduler.state_dict(),
             'epoch': epoch
         }
         torch.save(checkpoint, file_path)
