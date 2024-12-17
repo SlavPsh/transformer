@@ -62,6 +62,19 @@ def load_model(config, device):
             dim_feedforward=config['model']['dim_feedforward'],
             dropout=config['model']['dropout']
         ).to(device)
+    
+    elif config_model_type == 'vanilla_attn_scores':
+        from vanilla_model_attn_scores import TransformerRegressor
+
+        model = TransformerRegressor(
+            num_encoder_layers = config['model']['num_encoder_layers'],
+            d_model = config['model']['d_model'],
+            n_head=config['model']['n_head'],
+            input_size = config['model']['input_size'],
+            output_size = config['model']['output_size'],
+            dim_feedforward=config['model']['dim_feedforward'],
+            dropout=config['model']['dropout']
+        ).to(device)
 
 
     if 'checkpoint_path' not in config['model'] or not config['model']['checkpoint_path']:
@@ -114,6 +127,7 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
  
         # Make prediction
         padding_mask = (hits == PAD_TOKEN).all(dim=2)
+        attn_scores = None
     
         # TODO add autocast here to check if it changes the dot product calculation
         if config_model_type == 'flex_attention':
@@ -125,11 +139,21 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
         elif config_model_type == 'flash_attention':
             hits = torch.unsqueeze(hits[~padding_mask], 0)
             pred = model(hits, padding_mask)
-        else:
+        elif config_model_type == 'vanilla':
             pred = model(hits, padding_mask=padding_mask)
             pred = torch.unsqueeze(pred[~padding_mask], 0)
+        elif config_model_type == 'vanilla_attn_scores':
+            pred, attn_scores = model(hits, padding_mask=padding_mask)
+            pred = torch.unsqueeze(pred[~padding_mask], 0)
 
+            hits_to_save = hits.detach().cpu()
+            padding_to_save = padding_mask.detach().cpu()
+            attn_scores_to_save = attn_scores.detach().cpu()
+            torch.save(hits_to_save, f"/projects/0/nisei0750/slava/data/attn_scores/hits_{event_id}.pt")
+            torch.save(padding_to_save, f"/projects/0/nisei0750/slava/data/attn_scores/padding_{event_id}.pt")
+            torch.save(attn_scores_to_save, f"/projects/0/nisei0750/slava/data/attn_scores/attn_scores_{event_id}.pt")
 
+        
         cluster_labels = clustering(pred, min_cl_size, min_samples)
 
         

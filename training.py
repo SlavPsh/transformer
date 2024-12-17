@@ -69,6 +69,18 @@ def setup_training(config, device):
             dim_feedforward=config['model']['dim_feedforward'],
             dropout=config['model']['dropout']
         ).to(device)
+    elif config_model_type == 'vanilla_attn_scores':
+        from vanilla_model_attn_scores import TransformerRegressor
+
+        model = TransformerRegressor(
+            num_encoder_layers = config['model']['num_encoder_layers'],
+            d_model = config['model']['d_model'],
+            n_head=config['model']['n_head'],
+            input_size = config['model']['input_size'],
+            output_size = config['model']['output_size'],
+            dim_feedforward=config['model']['dim_feedforward'],
+            dropout=config['model']['dropout']
+        ).to(device)
 
    
 
