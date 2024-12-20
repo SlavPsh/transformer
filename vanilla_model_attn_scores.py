@@ -128,14 +128,20 @@ class TransformerRegressor(nn.Module):
         x = self.input_layer(input)
         memory = self.encoder(src=x, src_key_padding_mask=padding_mask)
 
-        layer1 = self.encoder.layers[0]
-        attn_scores = layer1.return_attn_scores()
+        all_attn = []
+        for i, layer in enumerate(self.encoder.layers):
+            attn = layer.return_attn_scores()
+            all_attn.append(attn)
+
+        # Suppose each attn has shape (num_heads, seq_len, seq_len)
+        # Stacking them adds an extra dim for layers: shape (num_layers, num_heads, seq_len, seq_len)
+        all_attn_tensor = torch.stack(all_attn, dim=0)
         
         out = self.decoder(memory)
         #if torch.isnan(memory).any(): 
         #    logging.error("Memory contains NaN values. Check attention mask.")
         #out = self.decoder(memory)
-        return out, attn_scores
+        return out, all_attn_tensor
     
     def attach_wandb_logger(self, wandb_logger):
         self.wandb_logger = wandb_logger

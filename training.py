@@ -69,18 +69,7 @@ def setup_training(config, device):
             dim_feedforward=config['model']['dim_feedforward'],
             dropout=config['model']['dropout']
         ).to(device)
-    elif config_model_type == 'vanilla_attn_scores':
-        from vanilla_model_attn_scores import TransformerRegressor
 
-        model = TransformerRegressor(
-            num_encoder_layers = config['model']['num_encoder_layers'],
-            d_model = config['model']['d_model'],
-            n_head=config['model']['n_head'],
-            input_size = config['model']['input_size'],
-            output_size = config['model']['output_size'],
-            dim_feedforward=config['model']['dim_feedforward'],
-            dropout=config['model']['dropout']
-        ).to(device)
 
    
 
@@ -167,8 +156,8 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
             with torch.amp.autocast('cuda'):
                 if config_model_type == 'flex_attention':
                     # Shall we remove import and padding mask generation from here?
-                    from custom_model import generate_padding_mask
-                    flex_padding_mask = generate_padding_mask(hits_seq_length)
+                    from custom_model import generate_padding_mask, generate_sliding_window_padding_mask
+                    flex_padding_mask = generate_sliding_window_padding_mask(hits_seq_length)
                     pred = model(hits,  flex_padding_mask)
                     pred = torch.unsqueeze(pred[~padding_mask], 0)
                     
@@ -227,11 +216,11 @@ def evaluate(model, validation_loader, loss_fn, device, config):
             track_params = torch.unsqueeze(track_params[~padding_mask], 0)
 
             if config_model_type == 'flash_attention' or config_model_type == 'flex_attention':
-                
+                # DO we need to remove flex padding mask from autocast ? 
                 with torch.amp.autocast('cuda'):
                     if config_model_type == 'flex_attention':
-                        from custom_model import generate_padding_mask
-                        flex_padding_mask = generate_padding_mask(hits_seq_length)
+                        from custom_model import generate_padding_mask, generate_sliding_window_padding_mask
+                        flex_padding_mask = generate_sliding_window_padding_mask(hits_seq_length)
                         pred = model(hits,  flex_padding_mask)
                         pred = torch.unsqueeze(pred[~padding_mask], 0)
                     else:

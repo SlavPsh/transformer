@@ -417,7 +417,7 @@ def generate_padding_mask(lengths):
 
     return padding_mask
 
-def generate_sliding_window_padding_mask(lengths, SLIDING_WINDOW=128):
+def generate_sliding_window_padding_mask(lengths, SLIDING_WINDOW=512):
     """Generates mask mods that apply to inputs to flex attention in the sequence stacked
 
     """
@@ -431,4 +431,18 @@ def generate_sliding_window_padding_mask(lengths, SLIDING_WINDOW=128):
 
         return padding_mask & (d <= SLIDING_WINDOW)
     return padding_mask
+
+def generate_cluster_padding_mask(lengths, cluster_id: Tensor):
+
+    def doc_mask_mod(b, h, q_idx, kv_idx):
+        L = lengths[b]
+        # Can we pad query here as well?
+        padding_mask = (kv_idx < L)
+        same_doc = (cluster_id[b][q_idx] == cluster_id[b][kv_idx]) #& (document_id[q_idx] < 2)
+        #q_logical = q_idx - offsets[document_id[q_idx]]
+        #kv_logical = kv_idx - offsets[document_id[kv_idx]]
+        #inner_mask = mask_mod(b, h, q_logical, kv_logical)
+        return same_doc & padding_mask
+
+    return doc_mask_mod
     

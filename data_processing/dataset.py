@@ -46,11 +46,12 @@ def load_trackml_data(data, normalize=True, chunking=False):
 
     # Shuffling the data and grouping by event ID, add random state for reproducibility
     shuffled_data = data.sample(frac=1, random_state=37)
+    #shuffled_data = data
     # Add extra colums to the data
     shuffled_data["p"] = np.sqrt(shuffled_data["px"]**2 + shuffled_data["py"]**2 + shuffled_data["pz"]**2)
     shuffled_data["log_p"] = np.log(shuffled_data["p"])
     shuffled_data["pt"] = np.sqrt(shuffled_data["px"]**2 + shuffled_data["py"]**2)
-    shuffled_data["log_pt"] = np.log(shuffled_data["pt"])
+    #shuffled_data["log_pt"] = np.log(shuffled_data["pt"])
     shuffled_data["theta"] = np.arccos(shuffled_data["pz"]/shuffled_data["p"])
     shuffled_data["phi"] = np.arctan2(shuffled_data["py"], shuffled_data["px"])
     shuffled_data["sin_phi"] = np.sin(shuffled_data["phi"])
@@ -59,7 +60,7 @@ def load_trackml_data(data, normalize=True, chunking=False):
 
         # Normalize the data if applicable
     if normalize:
-        for col in ["x", "y", "z", "theta"]:
+        for col in ["x", "y", "z", "theta", "log_p"]:
             mean = shuffled_data[col].mean()
             std = shuffled_data[col].std()
             shuffled_data[col] = (shuffled_data[col] - mean)/std
@@ -77,7 +78,8 @@ def load_trackml_data(data, normalize=True, chunking=False):
         return padded_hit_data, sequence_length
     
     def extract_hits_data_for_masking(event_rows):
-        # Returns the hit coordinates as a padded sequence; this is the input to the transformer
+        # Returns tensors with cluster ids for hits 
+        """
         event_hit_data = event_rows[["x", "y", "z", "particle_id"]].to_numpy(dtype=np.float32)
         r_cyl = np.sqrt(event_hit_data[:,0]**2 + event_hit_data[:,1]**2)
         rho = np.sqrt(event_hit_data[:,0]**2 + event_hit_data[:,1]**2 + event_hit_data[:,2]**2)
@@ -86,24 +88,31 @@ def load_trackml_data(data, normalize=True, chunking=False):
         eta_coord = -np.log(np.tan(theta_coord/2.))
         
         hits_data_for_masking = np.column_stack([event_hit_data[:,2], r_cyl, phi_cyl, eta_coord, event_hit_data[:,3]])
-        hits_data_for_masking_padded = np.pad(hits_data_for_masking, [(0, max_num_hits-len(event_rows)), (0, 0)], "constant", constant_values=PAD_TOKEN)
+        """
+
+        hits_data_for_masking = event_rows[["cluster_id"]].to_numpy(dtype=np.int16)
+        
+        hits_data_for_masking_padded = np.pad(hits_data_for_masking, [(0, max_num_hits-len(event_rows)), (0, 0)], "constant", constant_values=-2)
+        
         return hits_data_for_masking_padded
 
     def extract_track_params_data(event_rows):
         # Returns the track parameters as a padded sequence; this is what the transformer must regress
-        event_track_params_data = event_rows[["theta","sin_phi","cos_phi", "q"]].to_numpy(dtype=np.float32)
+        event_track_params_data = event_rows[["theta","sin_phi","cos_phi", "q", "log_p"]].to_numpy(dtype=np.float32)
 
         theta = event_track_params_data[:,0]
         sin_phi = event_track_params_data[:,1]
         cos_phi = event_track_params_data[:,2]
         q = event_track_params_data[:,3]
-        # log_pt = event_track_params_data[:,4]
-        processed_event_track_params_data = np.column_stack([theta, sin_phi, cos_phi, q])
+        log_p = event_track_params_data[:,4]
+        #vz = event_track_params_data[:,5]
+        processed_event_track_params_data = np.column_stack([theta, sin_phi, cos_phi, q, log_p])
         return np.pad(processed_event_track_params_data, [(0, max_num_hits-len(event_rows)), (0, 0)], "constant", constant_values=PAD_TOKEN)
 
     def extract_particle_data(event_rows):
         # Returns the particle information as a padded sequence; this is used for weighting in the calculation of trackML score
         event_hit_classes_data = event_rows[["particle_id","weight", "theta", "sin_phi", "q", "pt", "eta"]].to_numpy(dtype=np.float32)
+        
         return np.pad(event_hit_classes_data, [(0, max_num_hits-len(event_rows)), (0, 0)], "constant", constant_values=PAD_TOKEN)
 
     # Get the hits, track params and their weights as sequences padded up to a max length
