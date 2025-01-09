@@ -50,7 +50,7 @@ def load_trackml_data(data, normalize=True, chunking=False):
     # Add extra colums to the data
     shuffled_data["p"] = np.sqrt(shuffled_data["px"]**2 + shuffled_data["py"]**2 + shuffled_data["pz"]**2)
     shuffled_data["log_p"] = np.log(shuffled_data["p"])
-    shuffled_data["pt"] = np.sqrt(shuffled_data["px"]**2 + shuffled_data["py"]**2)
+    #shuffled_data["pt"] = np.sqrt(shuffled_data["px"]**2 + shuffled_data["py"]**2)
     #shuffled_data["log_pt"] = np.log(shuffled_data["pt"])
     shuffled_data["theta"] = np.arccos(shuffled_data["pz"]/shuffled_data["p"])
     shuffled_data["phi"] = np.arctan2(shuffled_data["py"], shuffled_data["px"])
@@ -89,10 +89,11 @@ def load_trackml_data(data, normalize=True, chunking=False):
         
         hits_data_for_masking = np.column_stack([event_hit_data[:,2], r_cyl, phi_cyl, eta_coord, event_hit_data[:,3]])
         """
-
-        hits_data_for_masking = event_rows[["cluster_id"]].to_numpy(dtype=np.int16)
+        sequence_length = len(event_rows)
+        hits_data_for_masking = event_rows["cluster_id"].to_numpy(dtype=np.int32)
+        #hits_data_for_masking = event_rows["particle_id"].to_numpy(dtype=np.int32)
         
-        hits_data_for_masking_padded = np.pad(hits_data_for_masking, [(0, max_num_hits-len(event_rows)), (0, 0)], "constant", constant_values=-2)
+        hits_data_for_masking_padded = np.pad(hits_data_for_masking, (0, max_num_hits-sequence_length), "constant", constant_values=-2)
         
         return hits_data_for_masking_padded
 

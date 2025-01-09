@@ -391,8 +391,8 @@ class TransformerRegressor(nn.Module):
         
         # TODO: exclude input and output layer compute for padding tokens
         x = self.input_layer(input)
-        B, S = input.size(0), input.size(1)
-        block_mask = create_block_mask(flex_padding_mask, B, None, S, S , _compile=True)   
+        B , S = input.size(0), input.size(1)
+        block_mask = create_block_mask(flex_padding_mask, None, None, S, S , _compile=True)   
 
         memory = self.encoder(src=x, flex_mask=block_mask)
         out = self.decoder(memory)
@@ -445,4 +445,17 @@ def generate_cluster_padding_mask(lengths, cluster_id: Tensor):
         return same_doc & padding_mask
 
     return doc_mask_mod
+
+def generate_doc_event_cluster_padding_mask(length, event_id, cluster_id: Tensor):
+
+    def doc_mask_mod(b, h, q_idx, kv_idx):
+        L = length[0]
+        padding_mask = (kv_idx < L)
+        same_event = (event_id[q_idx] == event_id[kv_idx])
+        same_cluster = (cluster_id[q_idx] == cluster_id[kv_idx]) 
+
+        return same_event & same_cluster & padding_mask
+
+    return doc_mask_mod
+    
     

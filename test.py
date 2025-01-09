@@ -131,8 +131,8 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
     
         # TODO add autocast here to check if it changes the dot product calculation
         if config_model_type == 'flex_attention':
-            from custom_model import generate_padding_mask, generate_sliding_window_padding_mask
-            flex_padding_mask = generate_sliding_window_padding_mask(hits_seq_length)
+            from custom_model import generate_padding_mask, generate_sliding_window_padding_mask, generate_cluster_padding_mask
+            flex_padding_mask = generate_cluster_padding_mask(hits_seq_length, hits_masking)
             with torch.amp.autocast('cuda'):
                 pred = model(hits,  flex_padding_mask)
             pred = torch.unsqueeze(pred[~padding_mask], 0)
