@@ -120,7 +120,7 @@ def make_tensors_from_chunk(df_chunk, pad_val=-1, multiple_of=128):
     # 1) x_norm, y_norm, z_norm => shape (orig_len, 3)
     xyz = np.column_stack([x, y, z])  # shape (orig_len, 3)
     # 2) log_p_norm, q, sin_phi, cos_phi, theta_norm => shape (orig_len,5)
-    other5 = np.column_stack([log_p, q, sin_phi, cos_phi, theta]) # (orig_len, 5)
+    other5 = np.column_stack([theta,  sin_phi, cos_phi, q, log_p]) # (orig_len, 5)
 
     # function to pad 2D
     def pad_2d(arr, final_len, pad_val):
