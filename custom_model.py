@@ -446,15 +446,15 @@ def generate_cluster_padding_mask(lengths, cluster_id: Tensor):
 
     return doc_mask_mod
 
-def generate_doc_event_cluster_padding_mask(length, event_id, cluster_id: Tensor):
+def generate_doc_event_cluster_padding_mask(length, event_id: Tensor):
 
     def doc_mask_mod(b, h, q_idx, kv_idx):
         L = length[0]
         padding_mask = (kv_idx < L)
         same_event = (event_id[q_idx] == event_id[kv_idx])
-        same_cluster = (cluster_id[q_idx] == cluster_id[kv_idx]) 
+        #same_cluster = (cluster_id[q_idx] == cluster_id[kv_idx]) 
 
-        return same_event & same_cluster & padding_mask
+        return same_event  & padding_mask
 
     return doc_mask_mod
     

@@ -50,7 +50,10 @@ def load_trackml_data(data, normalize=True, chunking=False):
     # Add extra colums to the data
     shuffled_data["p"] = np.sqrt(shuffled_data["px"]**2 + shuffled_data["py"]**2 + shuffled_data["pz"]**2)
     shuffled_data["log_p"] = np.log(shuffled_data["p"])
+    shuffled_data["q_on_p"] = shuffled_data["q"]/shuffled_data["p"]
+    
     shuffled_data["pt"] = np.sqrt(shuffled_data["px"]**2 + shuffled_data["py"]**2)
+    shuffled_data["q_on_pt"] = shuffled_data["q"]/shuffled_data["pt"]
     #shuffled_data["log_pt"] = np.log(shuffled_data["pt"])
     shuffled_data["theta"] = np.arccos(shuffled_data["pz"]/shuffled_data["p"])
     shuffled_data["phi"] = np.arctan2(shuffled_data["py"], shuffled_data["px"])
@@ -60,7 +63,7 @@ def load_trackml_data(data, normalize=True, chunking=False):
 
         # Normalize the data if applicable
     if normalize:
-        for col in ["x", "y", "z", "theta", "log_p"]:
+        for col in ["x", "y", "z", "theta", "q_on_pt", "log_p"]:
             mean = shuffled_data[col].mean()
             std = shuffled_data[col].std()
             shuffled_data[col] = (shuffled_data[col] - mean)/std
@@ -99,20 +102,20 @@ def load_trackml_data(data, normalize=True, chunking=False):
 
     def extract_track_params_data(event_rows):
         # Returns the track parameters as a padded sequence; this is what the transformer must regress
-        event_track_params_data = event_rows[["theta","sin_phi","cos_phi", "q", "log_p"]].to_numpy(dtype=np.float32)
+        event_track_params_data = event_rows[["theta","sin_phi","cos_phi", "q_on_pt", "log_p"]].to_numpy(dtype=np.float32)
 
         theta = event_track_params_data[:,0]
         sin_phi = event_track_params_data[:,1]
         cos_phi = event_track_params_data[:,2]
-        q = event_track_params_data[:,3]
+        q_on_pt = event_track_params_data[:,3]
         log_p = event_track_params_data[:,4]
         #vz = event_track_params_data[:,5]
-        processed_event_track_params_data = np.column_stack([theta, sin_phi, cos_phi, q, log_p])
+        processed_event_track_params_data = np.column_stack([theta, sin_phi, cos_phi, q_on_pt, log_p])
         return np.pad(processed_event_track_params_data, [(0, max_num_hits-len(event_rows)), (0, 0)], "constant", constant_values=PAD_TOKEN)
 
     def extract_particle_data(event_rows):
         # Returns the particle information as a padded sequence; this is used for weighting in the calculation of trackML score
-        event_hit_classes_data = event_rows[["particle_id","weight", "theta", "sin_phi", "q", "pt", "eta"]].to_numpy(dtype=np.float32)
+        event_hit_classes_data = event_rows[["particle_id","weight", "pt", "eta"]].to_numpy(dtype=np.float32)
         
         return np.pad(event_hit_classes_data, [(0, max_num_hits-len(event_rows)), (0, 0)], "constant", constant_values=PAD_TOKEN)
 
@@ -133,3 +136,55 @@ def load_trackml_data(data, normalize=True, chunking=False):
     hit_particle_data = torch.tensor(np.stack(grouped_particle_data.values))
 
     return hits_data, hits_data_seq_lengths, hits_data_for_masking, track_params_data, hit_particle_data
+
+
+def flatten_and_pad(batch_tensor, lengths, pad_val=-1):
+    """
+    batch_tensor: shape [B, S, F]
+      B = batch_size, S = max seq length (padded), F = feature_size
+    lengths: shape [B], each element is the true length for that row
+    pad_val: value for padding leftover entries (e.g. -1)
+
+    Returns a tensor shape [1, padded_len, F], where:
+      padded_len is the sum of all lengths, rounded up to multiple of 128.
+    """
+    # Check how many dims
+    original_dim = batch_tensor.dim()  # 2 or 3
+
+    # If shape is [B, S], pretend there's a feature dim of size 1
+    if original_dim == 2:
+        # shape => [B, S, 1]
+        batch_tensor = batch_tensor.unsqueeze(-1)
+        
+    B, S, F = batch_tensor.shape
+    
+    # 1) Gather valid data from each row, ignoring padded region
+    pieces = []
+    for i in range(B):
+        seq_len = lengths[i].item()  # e.g. 0 <= seq_len <= S
+        row_data = batch_tensor[i, :seq_len, :]  # shape [seq_len, F]
+        pieces.append(row_data)
+    
+    # 2) Concatenate into shape [total_len, F]
+    aggregator = torch.cat(pieces, dim=0)  # shape [sum(lengths), F]
+    total_len = aggregator.shape[0]
+
+    # 3) Round up total_len to multiple of 128
+    padded_len = ((total_len + 127) // 128) * 128
+
+    if padded_len > total_len:
+        # Create new tensor for the padded result
+        out = aggregator.new_full((padded_len, F), pad_val)  # fill with pad_val
+        out[:total_len] = aggregator
+    else:
+        out = aggregator  # exactly fits, no extra pad
+
+    # 4) unsqueeze at dim=0 => shape [1, padded_len, F]
+    out = out.unsqueeze(0)
+        # If the original was [B, S], we might want final shape [1, padded_len].
+    # So we can remove the last dim if F=1.
+    if original_dim == 2:
+        # shape => [1, padded_len]
+        out = out.squeeze(-1)
+
+    return out
