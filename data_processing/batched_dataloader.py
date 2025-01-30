@@ -2,12 +2,68 @@ import os
 import glob
 import re
 import random
-
+import logging
 import math
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
+
+def pad_tensor(tensor, pad_length, pad_value=-1):
+    """Pad a tensor to the specified length with the given pad value."""
+    if tensor.dim() == 1:
+        padding = pad_length - tensor.size(0)
+        if padding > 0:
+            return torch.nn.functional.pad(tensor, (0, padding), value=pad_value)
+    elif tensor.dim() == 2:
+        padding = pad_length - tensor.size(0)
+        if padding > 0:
+            return torch.nn.functional.pad(tensor, (0, 0, 0, padding), value=pad_value)
+    return tensor
+
+
+
+def load_and_process_batch(batch_csv, len_csv):
+    df_data = pd.read_csv(batch_csv)
+    df_len = pd.read_csv(len_csv)
+
+    # Determine the maximum event length
+    lengths = df_len['length'].to_numpy()
+    max_length_raw = lengths.max()
+    # Make it multiples of 128 for flex_attention block masking to work
+    max_length = ((max_length_raw + 128 - 1) // 128) * 128
+
+    # Initialize lists to store padded tensors
+    input_data_tensors = []
+    output_data_tensors = []
+    cluster_tensors = []
+
+    # Group by event_id and pad each group
+    grouped = df_data.groupby('event_id')
+    for event_id, event_data in grouped:
+        input_data_tensor = torch.tensor(event_data[['x', 'y', 'z']].values, dtype=torch.float32)
+        output_data_tensor = torch.tensor(event_data[['theta', 'sin_phi', 'cos_phi', 'q', 'log_p']].values, dtype=torch.float32)
+        cluster_tensor = torch.tensor(event_data['cluster_id'].values)
+        
+
+        # Pad the tensors
+        input_data_tensor = pad_tensor(input_data_tensor, max_length)
+        cluster_tensor = pad_tensor(cluster_tensor, max_length)
+        
+        # Append to lists
+        input_data_tensors.append(input_data_tensor)
+        output_data_tensors.append(output_data_tensor)
+        cluster_tensors.append(cluster_tensor)
+    
+    # Stack the tensors to form the batch
+    input_data_tensor = torch.stack(input_data_tensors)
+    output_data_tensor = torch.cat(output_data_tensors, dim=0)
+    cluster_tensor = torch.stack(cluster_tensors)
+    original_lengths_tensor = torch.tensor(lengths, dtype=torch.long)
+
+    
+    return input_data_tensor, output_data_tensor, cluster_tensor, original_lengths_tensor
+
 
 def gather_batch_files(folder_path, pattern_batch="batch_*.csv", pattern_lengths="event_lengths_*.csv",
                        train_ratio=0.70, val_ratio=0.15, test_ratio=0.15):
@@ -20,6 +76,8 @@ def gather_batch_files(folder_path, pattern_batch="batch_*.csv", pattern_lengths
     """
     assert abs(train_ratio+val_ratio+test_ratio - 1.0) < 1e-9, "Ratios must sum to 1"
 
+    random.seed(37) # to have the same output from shuffle
+    
     pattern_b = os.path.join(folder_path, pattern_batch)
     batch_files = glob.glob(pattern_b)
 
@@ -58,7 +116,7 @@ def gather_batch_files(folder_path, pattern_batch="batch_*.csv", pattern_lengths
             lf = lengths_dict[k]
             pairs.append((bf, lf))
         else:
-            print(f"Warning: no matching event_lengths_{k}.csv for {bf}")
+            logging.warning(f"Warning: no matching event_lengths_{k}.csv for {bf}")
 
     if not pairs:
         raise FileNotFoundError("No matching pairs of (batch_k, event_lengths_k) found.")
@@ -78,8 +136,6 @@ def gather_batch_files(folder_path, pattern_batch="batch_*.csv", pattern_lengths
     return train_pairs, val_pairs, test_pairs
 
 
-
-
 class ConcatBatchDataset(Dataset):
     """
     Each sample = combination of 'num_batches' pairs of CSVs:
@@ -87,102 +143,59 @@ class ConcatBatchDataset(Dataset):
       - event_lengths_{k}.csv -> length of each event
     We concatenate them all.
     """
-    def __init__(self, pairs_list, num_batches):
+    def __init__(self, pairs_list):
         """
         pairs_list: list of (batch_csv, length_csv)
-        num_batches: how many pairs to combine per sample
         """
         super().__init__()
         self.pairs_list = pairs_list
-        self.num_batches = num_batches
-        # how many samples can we produce
-        self._max_index = math.floor(len(self.pairs_list)/self.num_batches)
 
     def __len__(self):
-        return self._max_index
+        return len(self.pairs_list)
 
     def __getitem__(self, idx):
-        start_i = idx*self.num_batches
-        end_i   = start_i + self.num_batches
-        chunk = self.pairs_list[start_i:end_i]  # sub-list
+        batch_csv, len_csv = self.pairs_list[idx]
+        input_data_tensor, output_data_tensor, cluster_tensor, lengths_tensor = load_and_process_batch(batch_csv, len_csv)
+        return input_data_tensor, output_data_tensor, cluster_tensor, lengths_tensor
 
-        # We'll store data as a list of DataFrames, lengths as list of arrays
-        data_dfs   = []
-        lengths_arr = []
 
-        for (batch_csv, len_csv) in chunk:
-            df_data = pd.read_csv(batch_csv)
-            # optional preprocessing if needed
-            data_dfs.append(df_data)
-
-            df_len = pd.read_csv(len_csv)
-            # e.g. df_len has columns: [event_id, length], or just [length]?
-            # We'll assume it has a 'length' column
-            # Convert to a simple numpy array
-            length_vals = df_len["length"].to_numpy()
-            lengths_arr.append(length_vals)
-
-        # 1) Concat the data frames (ignore_index -> we just stack them)
-        big_df = pd.concat(data_dfs, ignore_index=True)
-
-        # 2) Concat the lengths arrays
-        # We'll produce one big array
-        big_lengths = np.concatenate(lengths_arr, axis=0)
-
-        # Convert to Torch Tensors
-        data_tensor    = torch.tensor(big_df.values, dtype=torch.float32)
-        lengths_tensor = torch.tensor(big_lengths,  dtype=torch.long)
-
-        return data_tensor, lengths_tensor
-
-def create_dataloaders(train_pairs, val_pairs, test_pairs, 
-                       num_batches_train=4, num_batches_val=2, num_batches_test=2):
+def create_dataloaders(folder_path):
     """
     Each loader returns (data_tensor, lengths_tensor) with batch_size=1.
     """
-    train_ds = ConcatBatchDataset(train_pairs, num_batches_train)
-    val_ds   = ConcatBatchDataset(val_pairs,   num_batches_val)
-    test_ds  = ConcatBatchDataset(test_pairs,  num_batches_test)
+    logging.info(f"Loading data from {folder_path}")
+    train_pairs, val_pairs, test_pairs = gather_batch_files(folder_path)
+    logging.info(f"Train has {len(train_pairs)} pairs, Val {len(val_pairs)}, Test {len(test_pairs)}")
 
-    # We set batch_size=1 => each iteration yields exactly one (data, lengths)
-    # shuffle train, not shuffle val/test
-    train_loader = DataLoader(train_ds, batch_size=1, shuffle=True)
-    val_loader   = DataLoader(val_ds,   batch_size=1, shuffle=False)
-    test_loader  = DataLoader(test_ds,  batch_size=1, shuffle=False)
+    train_ds = ConcatBatchDataset(train_pairs)
+    val_ds = ConcatBatchDataset(val_pairs)
+    test_ds = ConcatBatchDataset(test_pairs)
 
-    return train_loader, val_loader, test_loader
+    return train_ds, val_ds, test_ds
 
 def main():
-    folder_path = "/projects/0/nisei0750/slava/data/ml_input_data/batched_clustered_data_2_5"
+    folder_path = "/projects/0/nisei0750/slava/data/ml_input_data/batched_clustered_data_1_752"
     # Step A: gather + split
-    train_pairs, val_pairs, test_pairs = gather_batch_files(folder_path)
-    print(f"Train has {len(train_pairs)} pairs, Val {len(val_pairs)}, Test {len(test_pairs)}")
-
     # Step B: create DataLoaders
-    train_loader, val_loader, test_loader = create_dataloaders(
-        train_pairs, val_pairs, test_pairs,
-        num_batches_train=4,  # combine 4 pairs in each sample for train
-        num_batches_val=2,
-        num_batches_test=2
-    )
+    train_loader, val_loader, test_loader = create_dataloaders(folder_path)
 
     # Step C: usage
-    for i, (data, lengths) in enumerate(train_loader):
+    for i, (data, event_tensor, cluster_tensor) in enumerate(train_loader):
         # data shape e.g. [1, bigN, M] or [bigN, M] depending on collate
         # lengths shape e.g. [1, some_num] or [some_num]
         # We'll see how default collation wraps them.
-        print(f"Train iteration {i}: data={data.shape}, lengths={lengths.shape}")
+        print(f"Train iteration {i}: data={data.shape}, lengths={event_tensor.shape}")
         # do your training step...
         if i>=1: 
             break
 
     # Similarly for val, test
-    for i, (data, lengths) in enumerate(val_loader):
-        print("Val iteration:", i, data.shape, lengths.shape)
+    for i, (data, event_tensor, cluster_tensor) in enumerate(val_loader):
+        print("Val iteration:", i, data.shape, event_tensor.shape)
         break
 
-    for i, (data, lengths) in enumerate(test_loader):
-        print("Test iteration:", i, data.shape, lengths.shape)
+    for i, (data, event_tensor, cluster_tensor) in enumerate(test_loader):
+        print("Test iteration:", i, data.shape, event_tensor.shape)
         break
 
 if __name__ == "__main__":

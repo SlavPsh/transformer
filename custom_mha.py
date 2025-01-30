@@ -46,7 +46,6 @@ class FlexAttentionSingleton:
         """Compile the function if not already compiled and return it."""
         if self._compiled_function is None:
             print("Compiling the function for the first time...")
-            torch._dynamo.config.cache_size_limit = 1000
             self._compiled_function = torch.compile(function)
         return self._compiled_function
 

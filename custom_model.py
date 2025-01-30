@@ -1,8 +1,10 @@
 import torch
 import torch.nn as nn
 from typing import Optional
+from functools import lru_cache
 
 from torch import Tensor
+import logging
 import torch.nn.functional as F
 
 #from torch.nn.modules.activation import MultiheadAttention
@@ -388,12 +390,12 @@ class TransformerRegressor(nn.Module):
                 self.wandb_logger.initialize()
 
     def forward(self, input, flex_padding_mask):
-        
         # TODO: exclude input and output layer compute for padding tokens
         x = self.input_layer(input)
         B , S = input.size(0), input.size(1)
-        block_mask = create_block_mask(flex_padding_mask, None, None, S, S , _compile=True)   
 
+        # Do caching HERE 
+        block_mask = create_block_mask_cached(flex_padding_mask, B, None, S, S, device=input.device)   
         memory = self.encoder(src=x, flex_mask=block_mask)
         out = self.decoder(memory)
         #if torch.isnan(memory).any(): 
@@ -404,6 +406,10 @@ class TransformerRegressor(nn.Module):
     def attach_wandb_logger(self, wandb_logger):
         self.wandb_logger = wandb_logger
 
+@lru_cache
+def create_block_mask_cached(score_mod, B, H, M, N, device="cuda"):
+    block_mask = create_block_mask(score_mod, B, H, M, N, device=device, _compile=True)
+    return block_mask
 
 def generate_padding_mask(lengths):
     """Generates mask mods that apply to inputs to flex attention in the sequence stacked
@@ -435,26 +441,24 @@ def generate_sliding_window_padding_mask(lengths, SLIDING_WINDOW=512):
 def generate_cluster_padding_mask(lengths, cluster_id: Tensor):
 
     def doc_mask_mod(b, h, q_idx, kv_idx):
-        L = lengths[b]
         # Can we pad query here as well?
-        padding_mask = (kv_idx < L)
-        same_doc = (cluster_id[b][q_idx] == cluster_id[b][kv_idx]) #& (document_id[q_idx] < 2)
+        padding_mask = (kv_idx < lengths[b])
+        same_doc = (cluster_id[b, q_idx] == cluster_id[b, kv_idx]) #& (document_id[q_idx] < 2)
         #q_logical = q_idx - offsets[document_id[q_idx]]
         #kv_logical = kv_idx - offsets[document_id[kv_idx]]
         #inner_mask = mask_mod(b, h, q_logical, kv_logical)
-        return same_doc & padding_mask
+        return padding_mask & same_doc
 
     return doc_mask_mod
 
-def generate_doc_event_cluster_padding_mask(length, event_id: Tensor):
+def generate_doc_event_cluster_padding_mask(cluster_tensor, length_tensor: Tensor):
 
     def doc_mask_mod(b, h, q_idx, kv_idx):
-        L = length[0]
-        padding_mask = (kv_idx < L)
-        same_event = (event_id[q_idx] == event_id[kv_idx])
-        #same_cluster = (cluster_id[q_idx] == cluster_id[kv_idx]) 
+        padding_mask = (kv_idx < length_tensor[b])
+        #same_event = (event_tensor[q_idx] == event_tensor[kv_idx])
+        same_cluster = (cluster_tensor[b][q_idx] == cluster_tensor[b][kv_idx]) 
 
-        return same_event  & padding_mask
+        return same_cluster & padding_mask
 
     return doc_mask_mod
     
