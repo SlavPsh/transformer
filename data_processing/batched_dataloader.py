@@ -24,8 +24,17 @@ def pad_tensor(tensor, pad_length, pad_value=-1):
 
 
 def load_and_process_batch(batch_csv, len_csv):
-    df_data = pd.read_csv(batch_csv)
-    df_len = pd.read_csv(len_csv)
+
+    if isinstance(batch_csv, list) and isinstance(len_csv, list):
+        # Read and concatenate dataframes
+        batch_dfs = [pd.read_csv(csv) for csv in batch_csv]
+        len_dfs = [pd.read_csv(csv) for csv in len_csv]
+        df_data = pd.concat(batch_dfs, ignore_index=True)
+        df_len = pd.concat(len_dfs, ignore_index=True)
+    else:
+        # Read single dataframes
+        df_data = pd.read_csv(batch_csv)
+        df_len = pd.read_csv(len_csv)
 
     # Determine the maximum event length
     lengths = df_len['length'].to_numpy()
@@ -77,7 +86,7 @@ def gather_batch_files(folder_path, pattern_batch="batch_*.csv", pattern_lengths
     assert abs(train_ratio+val_ratio+test_ratio - 1.0) < 1e-9, "Ratios must sum to 1"
 
     random.seed(37) # to have the same output from shuffle
-    
+
     pattern_b = os.path.join(folder_path, pattern_batch)
     batch_files = glob.glob(pattern_b)
 
@@ -143,23 +152,35 @@ class ConcatBatchDataset(Dataset):
       - event_lengths_{k}.csv -> length of each event
     We concatenate them all.
     """
-    def __init__(self, pairs_list):
+    def __init__(self, pairs_list, use_double_batches = False):
         """
         pairs_list: list of (batch_csv, length_csv)
         """
         super().__init__()
         self.pairs_list = pairs_list
+        self.use_double_batches = use_double_batches
 
     def __len__(self):
-        return len(self.pairs_list)
+        if self.use_double_batches:
+            return len(self.pairs_list) // 2
+        else:
+            return len(self.pairs_list)
 
     def __getitem__(self, idx):
-        batch_csv, len_csv = self.pairs_list[idx]
+        
+        if self.use_double_batches:
+            batch_csv, len_csv = self.pairs_list[2*idx]
+            batch_csv2, len_csv2 = self.pairs_list[2*idx + 1]
+            batch_csv = [batch_csv, batch_csv2]
+            len_csv = [len_csv, len_csv2]
+        else:
+            batch_csv, len_csv = self.pairs_list[idx]
+            
         input_data_tensor, output_data_tensor, cluster_tensor, lengths_tensor = load_and_process_batch(batch_csv, len_csv)
         return input_data_tensor, output_data_tensor, cluster_tensor, lengths_tensor
 
 
-def create_dataloaders(folder_path):
+def create_dataloaders(folder_path, use_double_batches = False):
     """
     Each loader returns (data_tensor, lengths_tensor) with batch_size=1.
     """
@@ -167,9 +188,9 @@ def create_dataloaders(folder_path):
     train_pairs, val_pairs, test_pairs = gather_batch_files(folder_path)
     logging.info(f"Train has {len(train_pairs)} pairs, Val {len(val_pairs)}, Test {len(test_pairs)}")
 
-    train_ds = ConcatBatchDataset(train_pairs)
-    val_ds = ConcatBatchDataset(val_pairs)
-    test_ds = ConcatBatchDataset(test_pairs)
+    train_ds = ConcatBatchDataset(train_pairs, use_double_batches)
+    val_ds = ConcatBatchDataset(val_pairs, use_double_batches)
+    test_ds = ConcatBatchDataset(test_pairs, use_double_batches)
 
     return train_ds, val_ds, test_ds
 

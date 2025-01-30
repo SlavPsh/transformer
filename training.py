@@ -137,6 +137,7 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
 
     if config_model_type == 'flex_attention':
         optim.zero_grad()
+        mask_on_clusters = config['model']['mask_on_clusters']
 
         for i, (in_data_tensor, out_data_tensor, cluster_tensor, length_tensor) in enumerate(train_loader):    
             """
@@ -165,7 +166,8 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
             #track_params = torch.unsqueeze(track_params[~padding_mask], 0)
 
             """
-            logging.info(f"Starting batch {i}")
+            if i % 100 == 0:
+                logging.info(f"Starting batch {i}")
             # Pad the data tensor
             in_data_tensor = in_data_tensor.to(device)
             out_data_tensor = out_data_tensor.to(device)
@@ -174,8 +176,11 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
             
             # Shall we remove import and padding mask generation from here?
             from custom_model import generate_cluster_padding_mask, generate_padding_mask
-            # Chage this mask BACK !! to use cluster mask !!
-            flex_padding_mask = generate_padding_mask(length_tensor)
+ 
+            if mask_on_clusters:
+                flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
+            else:
+                flex_padding_mask = generate_padding_mask(length_tensor)
             #flex_padding_mask = generate_padding_mask(hits_seq_length)
                 
             with torch.amp.autocast('cuda'):  
@@ -252,6 +257,7 @@ def evaluate(model, validation_loader, loss_fn, device, config):
 
     with torch.no_grad():
         if config_model_type == 'flex_attention':
+            mask_on_clusters = config['model']['mask_on_clusters']
             for i,  (in_data_tensor, out_data_tensor, cluster_tensor, length_tensor) in enumerate(validation_loader):
                 
                 """
@@ -292,8 +298,10 @@ def evaluate(model, validation_loader, loss_fn, device, config):
                 
                 # Shall we remove import and padding mask generation from here?
                 from custom_model import generate_cluster_padding_mask, generate_padding_mask
-                # Chage this mask BACK !! to use cluster mask !!
-                flex_padding_mask = generate_padding_mask(length_tensor)
+                if mask_on_clusters:
+                    flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
+                else:
+                    flex_padding_mask = generate_padding_mask(length_tensor)
                 #flex_padding_mask = generate_padding_mask(hits_seq_length)
 
                 
@@ -304,6 +312,7 @@ def evaluate(model, validation_loader, loss_fn, device, config):
                     pred = torch.unsqueeze(pred[~padding_mask], 0)
                     loss = loss_fn(pred, track_params)
                     """
+                    # Unpad the pred tensor, output data tensor is not padded
                     mask = torch.arange(pred.size(1), device=device).expand(len(length_tensor), pred.size(1)) < length_tensor.unsqueeze(1)
                     pred = pred[mask].view(-1, pred.size(2))
                     loss = loss_fn(pred, out_data_tensor)
@@ -337,20 +346,6 @@ def evaluate(model, validation_loader, loss_fn, device, config):
                 total_count_sum += 1
    
     return total_loss_sum / total_count_sum
-
-def custom_mse_loss(predictions, targets, weights):
-
-    # Ensure the weights are normalized
-    normalized_weights = weights / weights.sum()
-
-    # Compute the squared difference between predictions and targets
-    squared_diff = (predictions - targets) ** 2  
-    # Apply the extracted weights
-    weighted_squared_diff = normalized_weights * squared_diff  
-    # Compute the mean of the weighted squared differences
-    loss = weighted_squared_diff.mean()
-
-    return loss
 
 def main(config_path):
     #Create unique run name
@@ -413,7 +408,8 @@ def main(config_path):
         """
         data_folder = config['data']['data_dir']
         logging.info(f'Loading data from {data_folder} ...')
-        train_loader, valid_loader, _ = create_dataloaders(data_folder) 
+        use_double_batches = config['training']['use_double_batches']
+        train_loader, valid_loader, _ = create_dataloaders(data_folder, use_double_batches=use_double_batches) 
     else:
         data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
     

@@ -443,7 +443,7 @@ def generate_cluster_padding_mask(lengths, cluster_id: Tensor):
     def doc_mask_mod(b, h, q_idx, kv_idx):
         # Can we pad query here as well?
         padding_mask = (kv_idx < lengths[b])
-        same_doc = (cluster_id[b, q_idx] == cluster_id[b, kv_idx]) #& (document_id[q_idx] < 2)
+        same_doc = (cluster_id[b, q_idx] == cluster_id[b, kv_idx]) 
         #q_logical = q_idx - offsets[document_id[q_idx]]
         #kv_logical = kv_idx - offsets[document_id[kv_idx]]
         #inner_mask = mask_mod(b, h, q_logical, kv_logical)
@@ -451,7 +451,7 @@ def generate_cluster_padding_mask(lengths, cluster_id: Tensor):
 
     return doc_mask_mod
 
-def generate_doc_event_cluster_padding_mask(cluster_tensor, length_tensor: Tensor):
+def generate_doc_event_cluster_padding_mask( length_tensor, cluster_tensor: Tensor):
 
     def doc_mask_mod(b, h, q_idx, kv_idx):
         padding_mask = (kv_idx < length_tensor[b])

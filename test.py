@@ -120,41 +120,48 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
     combined_bin_scores = {param: [] for param in bin_ranges.keys()}
 
     for data in test_loader:
-        # data is per event (becasue batch_size = 1)
-        # Split the data for this event
-        event_id, hits, hits_seq_length, hits_masking, track_params, track_labels = data
-        hits, hits_seq_length, hits_masking, track_params, track_labels = hits.to(device), hits_seq_length.to(device), hits_masking.to(device), track_params.to(device), track_labels.to(device)
- 
-        # Make prediction
-        padding_mask = (hits == PAD_TOKEN).all(dim=2)
-        attn_scores = None
+
     
         # TODO add autocast here to check if it changes the dot product calculation
         if config_model_type == 'flex_attention':
-            from custom_model import generate_padding_mask, generate_sliding_window_padding_mask, generate_cluster_padding_mask
-            flex_padding_mask = generate_cluster_padding_mask(hits_seq_length, hits_masking)
+            mask_on_clusters = config['model']['mask_on_clusters']
+            
+
+            from custom_model import generate_padding_mask, generate_cluster_padding_mask
+            if mask_on_clusters:
+                flex_padding_mask = generate_cluster_padding_mask(hits_seq_length, hits_masking)
+            else:
+                flex_padding_mask = generate_padding_mask(hits_seq_length)
+                
             with torch.amp.autocast('cuda'):
                 pred = model(hits,  flex_padding_mask)
             pred = torch.unsqueeze(pred[~padding_mask], 0)
-            
-        elif config_model_type == 'flash_attention':
-            hits = torch.unsqueeze(hits[~padding_mask], 0)
-            pred = model(hits, padding_mask)
-        elif config_model_type == 'vanilla':
-            pred = model(hits, padding_mask=padding_mask)
-            pred = torch.unsqueeze(pred[~padding_mask], 0)
-        elif config_model_type == 'vanilla_attn_scores':
-            pred, attn_scores = model(hits, padding_mask=padding_mask)
-            pred = torch.unsqueeze(pred[~padding_mask], 0)
 
-            hits_to_save = hits.detach().cpu()
-            track_labels_to_save = track_labels.detach().cpu()
-            padding_to_save = padding_mask.detach().cpu()
-            attn_scores_to_save = attn_scores.detach().cpu()
-            torch.save(hits_to_save, f"/projects/0/nisei0750/slava/data/attn_scores_200_500/hits_{event_id}.pt")
-            torch.save(track_labels_to_save, f"/projects/0/nisei0750/slava/data/attn_scores_200_500/track_labels_{event_id}.pt")
-            torch.save(padding_to_save, f"/projects/0/nisei0750/slava/data/attn_scores_200_500/padding_{event_id}.pt")
-            torch.save(attn_scores_to_save, f"/projects/0/nisei0750/slava/data/attn_scores_200_500/attn_scores_{event_id}.pt")
+        else:
+            # data is per event (becasue batch_size = 1)
+            # Split the data for this event
+            event_id, hits, hits_seq_length, hits_masking, track_params, track_labels = data
+            hits, hits_seq_length, hits_masking, track_params, track_labels = hits.to(device), hits_seq_length.to(device), hits_masking.to(device), track_params.to(device), track_labels.to(device)
+    
+            # Make prediction
+            padding_mask = (hits == PAD_TOKEN).all(dim=2)
+            attn_scores = None
+
+            if config_model_type == 'vanilla':
+                pred = model(hits, padding_mask=padding_mask)
+                pred = torch.unsqueeze(pred[~padding_mask], 0)
+            elif config_model_type == 'vanilla_attn_scores':
+                pred, attn_scores = model(hits, padding_mask=padding_mask)
+                pred = torch.unsqueeze(pred[~padding_mask], 0)
+
+                hits_to_save = hits.detach().cpu()
+                track_labels_to_save = track_labels.detach().cpu()
+                padding_to_save = padding_mask.detach().cpu()
+                attn_scores_to_save = attn_scores.detach().cpu()
+                torch.save(hits_to_save, f"/projects/0/nisei0750/slava/data/attn_scores_200_500/hits_{event_id}.pt")
+                torch.save(track_labels_to_save, f"/projects/0/nisei0750/slava/data/attn_scores_200_500/track_labels_{event_id}.pt")
+                torch.save(padding_to_save, f"/projects/0/nisei0750/slava/data/attn_scores_200_500/padding_{event_id}.pt")
+                torch.save(attn_scores_to_save, f"/projects/0/nisei0750/slava/data/attn_scores_200_500/attn_scores_{event_id}.pt")
 
         
         cluster_labels = clustering(pred, min_cl_size, min_samples)
