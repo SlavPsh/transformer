@@ -14,8 +14,7 @@ import logging
 import os, sys
 from coolname import generate_slug
 from data_processing.dataset import HitsDataset, PAD_TOKEN, get_dataloaders, flatten_and_pad
-from data_processing.dataloader import ChunkedIterableDataset, get_dataloader
-from data_processing.batched_dataloader import create_dataloaders
+from data_processing.tensor_dataloader import get_train_valid_dataloaders
 
 
 def setup_training(config, device):
@@ -356,6 +355,7 @@ def main(config_path):
     output_dir = unique_output_dir(config, run_name) # with time stamp and run name
     copy_config_to_output(config_path, output_dir)
     # Set up logging
+    
     setup_logging(config, output_dir)
 
     # Set up wandb
@@ -365,9 +365,14 @@ def main(config_path):
                                 job_type="training")
     wandb_logger.initialize()
     # Log the configuration
+
+
     logging.info(f'Loading config from {config_path} ')
+    for key, value in config.items():
+        logging.info(f'{key}: {value}')
     logging.info(f'Output_dir: {output_dir}')
-    logging.info(f"Description: {config['experiment']['description']}")
+
+
     early_stopping_epoch = config['training']['early_stopping']['patience']
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -408,8 +413,7 @@ def main(config_path):
         """
         data_folder = config['data']['data_dir']
         logging.info(f'Loading data from {data_folder} ...')
-        use_double_batches = config['training']['use_double_batches']
-        train_loader, valid_loader, _ = create_dataloaders(data_folder, use_double_batches=use_double_batches) 
+        train_loader, valid_loader = get_train_valid_dataloaders(data_folder, batch_size=batch_size) 
     else:
         data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
     

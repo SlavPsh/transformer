@@ -1,7 +1,7 @@
 import torch
 from data_processing.dataset import HitsDataset, get_dataloaders
 from data_processing.dataset import load_trackml_data, PAD_TOKEN
-from evaluation.scoring import calc_score_trackml, calculate_bined_scores, calc_edge_efficiency
+from evaluation.scoring import calc_score_trackml, calculate_bined_scores
 from evaluation.clustering import clustering
 #from evaluation.plotting import plot_heatmap
 
@@ -12,6 +12,7 @@ import argparse
 import logging
 from coolname import generate_slug
 import wandb
+from data_processing.tensor_dataloader import get_test_dataloader
 
 
 def load_model(config, device):
@@ -112,32 +113,56 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
     config_model_type = config['model']['type']
     torch.set_grad_enabled(False)
     model.eval()
-    predictions = {}
-    score, edge_efficiency, perfects, doubles, lhcs = 0., 0., 0., 0., 0.
+    pred_list = []
+    track_labels_list = []
+    scores_list = []
+    perfects, doubles, lhcs =  0., 0., 0.
+
 
     # Initialize a dictionary to store bin scores for all events
     counter = 0
     combined_bin_scores = {param: [] for param in bin_ranges.keys()}
-
-    for data in test_loader:
-
     
-        # TODO add autocast here to check if it changes the dot product calculation
-        if config_model_type == 'flex_attention':
-            mask_on_clusters = config['model']['mask_on_clusters']
+    if config_model_type == 'flex_attention':
+        for i,  (in_data_tensor, out_data_tensor, cluster_tensor, length_tensor) in enumerate(test_loader):
             
+            in_data_tensor = in_data_tensor.to(device)
+            cluster_tensor = cluster_tensor.to(device)
+            length_tensor = length_tensor.to(device)
 
+            mask_on_clusters = config['model']['mask_on_clusters']
             from custom_model import generate_padding_mask, generate_cluster_padding_mask
             if mask_on_clusters:
-                flex_padding_mask = generate_cluster_padding_mask(hits_seq_length, hits_masking)
+                flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
             else:
-                flex_padding_mask = generate_padding_mask(hits_seq_length)
+                flex_padding_mask = generate_padding_mask(length_tensor)
                 
             with torch.amp.autocast('cuda'):
-                pred = model(hits,  flex_padding_mask)
-            pred = torch.unsqueeze(pred[~padding_mask], 0)
+                pred = model(in_data_tensor, flex_padding_mask)
 
-        else:
+            pred_list = [pred[i, :length_tensor[i], :] for i in range(len(length_tensor))]
+            
+            cluster_labels_list = clustering(pred_list, min_cl_size, min_samples)
+
+            for cluster_labels, track_labels in zip(cluster_labels_list, out_data_tensor):
+                event_score, scores, nr_particles, predicted_tracks, true_tracks = calc_score_trackml(cluster_labels, track_labels)
+                scores_list.append(event_score)
+                if wandb_logger != None:
+                    metrics = {'batch/event score' : event_score, 
+                            'batch/num_hits_per_event' : len(cluster_labels),
+                            'batch/num_particles_per_event' : nr_particles
+                            }
+                    wandb_logger.log(metrics)
+
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+
+            if i % 10 == 0:
+                print(f"Processed {i} batches. Last score {scores_list[-1]}")
+
+
+    else:
+        for data in test_loader:
             # data is per event (becasue batch_size = 1)
             # Split the data for this event
             event_id, hits, hits_seq_length, hits_masking, track_params, track_labels = data
@@ -162,62 +187,40 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
                 torch.save(track_labels_to_save, f"/projects/0/nisei0750/slava/data/attn_scores_200_500/track_labels_{event_id}.pt")
                 torch.save(padding_to_save, f"/projects/0/nisei0750/slava/data/attn_scores_200_500/padding_{event_id}.pt")
                 torch.save(attn_scores_to_save, f"/projects/0/nisei0750/slava/data/attn_scores_200_500/attn_scores_{event_id}.pt")
-
         
-        cluster_labels = clustering(pred, min_cl_size, min_samples)
-
+            hits = torch.unsqueeze(hits[~padding_mask], 0)
+            track_params = torch.unsqueeze(track_params[~padding_mask], 0)
+            track_labels = torch.unsqueeze(track_labels[~padding_mask], 0)
         
-        hits = torch.unsqueeze(hits[~padding_mask], 0)
-        track_params = torch.unsqueeze(track_params[~padding_mask], 0)
-        track_labels = torch.unsqueeze(track_labels[~padding_mask], 0)
-        
-
-        event_score, scores, nr_particles, predicted_tracks, true_tracks = calc_score_trackml(cluster_labels[0], track_labels[0])
-        #event_edge_efficiency = calc_edge_efficiency(cluster_labels[0], track_labels[0])
-
-        score += event_score
-        if counter % 100 == 0:
-            logging.info(f'Event {counter} score {event_score}')
-        counter += 1
-        #edge_efficiency += event_edge_efficiency
-        perfects += scores[0]
-        doubles += scores[1]
-        lhcs += scores[2]
 
         #bin_scores = calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges)
         #for param, scores in bin_scores.items():
         #    combined_bin_scores[param].append(scores)
-           
-
-        if wandb_logger != None:
-            memory_stats = wandb_logger.get_system_memory_stats()
-            metrics = {'batch/event_id[0]' : event_id[0],
-                       'batch/event score' : event_score, 
-                       
-                       'batch/num_hits_per_event' : len(hits[0]),
-                       'batch/num_particles_per_event' : nr_particles,
-                       **memory_stats
-                       }
-            #'batch/edge_efficiency' : event_edge_efficiency,
-            wandb_logger.log(metrics)
-        
-        # Free up memory
-        del hits, hits_masking, track_params, padding_mask, pred, track_labels
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
-
-    total_average_score = score/len(test_loader)
-    total_average_edge_efficiency = edge_efficiency/len(test_loader)
+            
 
     #wandb_logger.plot_binned_scores(combined_bin_scores, total_average_score)
+    total_average_score = sum(scores_list) / len(scores_list)
 
-    return total_average_score, total_average_edge_efficiency, perfects/len(test_loader), doubles/len(test_loader), lhcs/len(test_loader)
+    return total_average_score
 
 def main(config_path):
-        #Create unique run name
-    run_name = generate_slug(3)+"_eval"
+
+    
     # Load the configuration file
     config = load_config(config_path)
+
+
+    if 'checkpoint_path' not in config['model'] or not config['model']['checkpoint_path']:
+        print('Checkpoint path must be provided for evaluation.')
+    else:
+        #Create unique run name from the checkpoint path
+        import re
+        match = re.search(r'\d{8}_\d{6}_([a-zA-Z0-9-]+)_train', config['model']['checkpoint_path'])
+        if match:
+            run_name = match.group(1) + generate_slug(1) + "_eval"
+        else:
+            run_name = generate_slug(3) + "_eval"
+
     # Create the output directory
     output_dir = unique_output_dir(config, run_name) # with time stamp and run name
     copy_config_to_output(config_path, output_dir)
@@ -231,6 +234,8 @@ def main(config_path):
                                 job_type="evaluation")
     wandb_logger.initialize()
     logging.info(f"Loading config from {config_path} ")
+    for key, value in config.items():
+        logging.info(f'{key}: {value}')
     logging.info(f"Description: {config['experiment']['description']}")
     logging.info(f"Output_dir: {output_dir}")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -239,6 +244,7 @@ def main(config_path):
     logging.info(f" ==== Model : ====")
     logging.info(config['model'])
 
+    """
     torch.manual_seed(37)  # for reproducibility
     data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
     logging.info(f"Loading data from {data_path} ...")
@@ -250,6 +256,11 @@ def main(config_path):
                                         valid_frac=0.15,
                                         test_frac=0.15,
                                         batch_size=1)
+
+    """
+    data_folder = config['data']['data_dir']
+    logging.info(f'Loading data from {data_folder} ...')
+    test_loader = get_test_dataloader(data_folder, batch_size=16) 
 
     logging.info("Data loaded")
 
@@ -264,12 +275,12 @@ def main(config_path):
     min_sam = wandb.config.min_samples if 'min_samples' in wandb.config else 3
     bin_ranges = config['bin_ranges']
 
-    score, edge_efficiency, perfect, double_maj, lhc = test_main(model, test_loader, cl_size, min_sam, bin_ranges, device, config, wandb_logger)
-    print(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}, Edge efficiency {edge_efficiency}', flush=True)
-    logging.info(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {score}, Edge efficiency {edge_efficiency}')
+    avg_score = test_main(model, test_loader, cl_size, min_sam, bin_ranges, device, config, wandb_logger)
+    print(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {avg_score}', flush=True)
+    logging.info(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {avg_score}')
     #print(perfect, double_maj, lhc, flush=True)
 
-    wandb_logger.log({'total/cluster size' : cl_size, 'total/min sample size' : min_sam,'total/trackML score': score, 'total/edge_efficiency': edge_efficiency})
+    wandb_logger.log({'total/cluster size' : cl_size, 'total/min sample size' : min_sam,'total/trackML score': avg_score})
 
     wandb_logger.alert("Finished test", "Finished test")
     
