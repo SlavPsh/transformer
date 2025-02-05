@@ -124,7 +124,11 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
     combined_bin_scores = {param: [] for param in bin_ranges.keys()}
     
     if config_model_type == 'flex_attention':
-        for i,  (in_data_tensor, out_data_tensor, cluster_tensor, length_tensor) in enumerate(test_loader):
+        for i,  (data_tensor, length_tensor) in enumerate(test_loader):
+            
+            in_data_tensor = data_tensor[..., :3]
+            out_data_tensor = torch.cat((data_tensor[..., 11:13], data_tensor[..., 8:10]), dim=-1)
+            cluster_tensor = data_tensor[..., 13:]
             
             in_data_tensor = in_data_tensor.to(device)
             cluster_tensor = cluster_tensor.to(device)
@@ -141,6 +145,7 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
                 pred = model(in_data_tensor, flex_padding_mask)
 
             pred_list = [pred[i, :length_tensor[i], :] for i in range(len(length_tensor))]
+            out_data_tensor = [out_data_tensor[i, :length_tensor[i], :] for i in range(len(length_tensor))]
             
             cluster_labels_list = clustering(pred_list, min_cl_size, min_samples)
 

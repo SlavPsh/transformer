@@ -382,6 +382,7 @@ class TransformerRegressor(nn.Module):
         self.encoder = CustomTransformerEncoder(encoder_layers, num_encoder_layers, enable_nested_tensor=False)
         self.decoder = nn.Linear(d_model, output_size)
         self.num_heads = n_head
+        self.mask_cache = {}
 
         # Initialize the wandb logger
         self.wandb_logger = wandb_logger
@@ -389,15 +390,34 @@ class TransformerRegressor(nn.Module):
             if self.wandb_logger.initialized == False:
                 self.wandb_logger.initialize()
 
-    def forward(self, input, flex_padding_mask):
+    def forward(self, input, batch_name, flex_padding_mask, timer=None):
         # TODO: exclude input and output layer compute for padding tokens
+        if timer:
+            timer.start('input_layer')
         x = self.input_layer(input)
+        if timer:
+            timer.stop()
         B , S = input.size(0), input.size(1)
 
         # Do caching HERE 
-        block_mask = create_block_mask_cached(flex_padding_mask, B, None, S, S, device=input.device)   
-        memory = self.encoder(src=x, flex_mask=block_mask)
+        if timer:
+            timer.start('block_mask')
+        if batch_name not in self.mask_cache:
+            self.mask_cache[batch_name] = create_block_mask_cached(flex_padding_mask, B, None, S, S, device=input.device)
+
+        if timer:
+            timer.stop()
+        
+        if timer:
+            timer.start('encoder')
+        memory = self.encoder(src=x, flex_mask=self.mask_cache[batch_name])
+        if timer:
+            timer.stop()
+        if timer:
+            timer.start('decoder')
         out = self.decoder(memory)
+        if timer:
+            timer.stop()
         #if torch.isnan(memory).any(): 
         #    logging.error("Memory contains NaN values. Check attention mask.")
         #out = self.decoder(memory)

@@ -26,28 +26,14 @@ from torch.overrides import (
     has_torch_function,
 )
 
-import threading
-class FlexAttentionSingleton:
-    """Singleton class to compile FlexAttention function once and reuse it."""
+_flex_attention_compiled = None
 
-    _instance = None
-    _lock = threading.Lock()  # Ensures thread safety
-
-    def __new__(cls):
-        # Ensure only one instance is created
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance._compiled_function = None  # Initialize compiled function
-        return cls._instance
-
-    def get_compiled_function(self, function):
-        """Compile the function if not already compiled and return it."""
-        if self._compiled_function is None:
-            print("Compiling the function for the first time...")
-            self._compiled_function = torch.compile(function)
-        return self._compiled_function
+def get_compiled_flex_attention():
+    global _flex_attention_compiled
+    if _flex_attention_compiled is None:
+        print("Compiling flex_attention once...", flush=True)
+        _flex_attention_compiled = torch.compile(flex_attention, dynamic=False)
+    return _flex_attention_compiled
 
 
 class CustomMultiHeadAttention(MultiheadAttention):
@@ -805,7 +791,7 @@ def multi_head_attention_forward(
         )
         
         """
-        compiled_flex_attention = FlexAttentionSingleton().get_compiled_function(flex_attention)
+        compiled_flex_attention = get_compiled_flex_attention()
         attn_output = compiled_flex_attention(
             q, k, v, block_mask=block_mask
         )

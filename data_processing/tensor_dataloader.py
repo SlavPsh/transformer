@@ -31,11 +31,11 @@ def load_split_dataset(folder_path, split="train"):
     """
     Loads data_tensor and lengths_tensor from:
        {folder_path}/{split}_data.pt
-       {folder_path}/{split}_length.pt
+       {folder_path}/{split}_lengths.pt
     and returns an EventDataset with them.
     """
     data_file = f"{folder_path}/{split}_data.pt"
-    length_file = f"{folder_path}/{split}_length.pt"
+    length_file = f"{folder_path}/{split}_lengths.pt"
 
     # Load the saved PyTorch tensors
     data_tensor = torch.load(data_file)      # shape (N, max_len, 14)

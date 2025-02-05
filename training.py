@@ -9,12 +9,14 @@ import numpy as np
 import wandb
 from utils.io_utils import load_config, setup_logging, unique_output_dir, copy_config_to_output, get_file_path
 from utils.wandb_utils import WandbLogger
+from utils.timing_utils import StepTimer
 import argparse
 import logging
 import os, sys
 from coolname import generate_slug
 from data_processing.dataset import HitsDataset, PAD_TOKEN, get_dataloaders, flatten_and_pad
 from data_processing.tensor_dataloader import get_train_valid_dataloaders
+from custom_model import generate_cluster_padding_mask, generate_padding_mask
 
 
 def setup_training(config, device):
@@ -41,24 +43,10 @@ def setup_training(config, device):
             dim_feedforward=config['model']['dim_feedforward'],
             dropout=config['model']['dropout']
         ).to(device)
-    elif config_model_type == 'flash_attention':
-        from flash_model import TransformerRegressor
-        print("FlashAttention available:", torch.backends.cuda.flash_sdp_enabled())
 
-        model = TransformerRegressor(
-            num_encoder_layers = config['model']['num_encoder_layers'],
-            d_model = config['model']['d_model'],
-            n_head=config['model']['n_head'],
-            input_size = config['model']['input_size'],
-            output_size = config['model']['output_size'],
-            dim_feedforward=config['model']['dim_feedforward'],
-            dropout=config['model']['dropout']
-        ).to(device)
     elif config_model_type == 'flex_attention':
         from custom_model import TransformerRegressor
         
-
-
         # For better performance, you can use:
         # flex_attention = torch.compile(_flex_attention, dynamic=False, mode="max-autotune-no-cudagraphs")
 
@@ -122,7 +110,7 @@ def setup_training(config, device):
     return model, optimizer, lr_scheduler, loss_fn, start_epoch
 
 
-def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None):
+def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None, timer=None):
     '''
     Conducts a single epoch of training: prediction, loss calculation, and loss
     backpropagation. Returns the average loss over the whole train data.
@@ -135,46 +123,34 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
     total_count_sum = 0
 
     if config_model_type == 'flex_attention':
-        optim.zero_grad()
+        
         mask_on_clusters = config['model']['mask_on_clusters']
+        accumulation_steps = 2
+        optim.zero_grad()
 
-        for i, (in_data_tensor, out_data_tensor, cluster_tensor, length_tensor) in enumerate(train_loader):    
-            """
-            num_events, hit_input_tensor, param_output_tensor, length_tensor, evt_tensor, clus_tensor = data
-            # Move everything to GPU if available
-            num_events = num_events[0].item()
-            hit_input_tensor = hit_input_tensor.to(device)
-            param_output_tensor = param_output_tensor.to(device)
-            length_tensor = length_tensor.squeeze(0).to(device)
-            evt_tensor = evt_tensor.squeeze(0).to(device)
-            clus_tensor = clus_tensor.squeeze(0).to(device)   
-            valid_length = int(length_tensor[0].item())
-            
-            _, hit_input_tensor, hits_seq_length, hits_masking, track_params, _ = data
-
-            hit_input_tensor = flatten_and_pad(hit_input_tensor, hits_seq_length)
-            track_params = flatten_and_pad(track_params, hits_seq_length)
-            hits_masking = flatten_and_pad(hits_masking, hits_seq_length)
-            hits_masking = hits_masking.squeeze(0)
-            length_tensor = hits_seq_length.sum().unsqueeze(0)
-            valid_length = int(length_tensor[0].item())
-            length_tensor = length_tensor.to(device)
-
-            hit_input_tensor, hits_seq_length, hits_masking, track_params = hit_input_tensor.to(device), hits_seq_length.to(device), hits_masking.to(device), track_params.to(device)
-            #padding_mask = (hit_input_tensor == PAD_TOKEN).all(dim=2)
-            #track_params = torch.unsqueeze(track_params[~padding_mask], 0)
-
-            """
+        for i, (data_tensor, length_tensor) in enumerate(train_loader):    
+            optim.zero_grad()
             if i % 100 == 0:
                 logging.info(f"Starting batch {i}")
-            # Pad the data tensor
-            in_data_tensor = in_data_tensor.to(device)
-            out_data_tensor = out_data_tensor.to(device)
-            cluster_tensor = cluster_tensor.to(device)
-            length_tensor = length_tensor.to(device)
+            # Slice the data tensor
+            if timer:
+                timer.start('data_transfer')
             
+            length_tensor = length_tensor.to(device)
+
+            in_data_tensor_cpu = data_tensor[..., :3]
+            out_data_tensor_cpu = data_tensor[..., 3:8]
+            cluster_tensor_cpu = data_tensor[..., 13:].squeeze(-1)
+
+            in_data_tensor = in_data_tensor_cpu.to(device)
+            out_data_tensor = out_data_tensor_cpu.to(device)
+            cluster_tensor = cluster_tensor_cpu.to(device)
+
+            del in_data_tensor_cpu, out_data_tensor_cpu, cluster_tensor_cpu
+            
+            if timer:
+                timer.stop()
             # Shall we remove import and padding mask generation from here?
-            from custom_model import generate_cluster_padding_mask, generate_padding_mask
  
             if mask_on_clusters:
                 flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
@@ -183,33 +159,51 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
             #flex_padding_mask = generate_padding_mask(hits_seq_length)
                 
             with torch.amp.autocast('cuda'):  
-                pred = model(in_data_tensor, flex_padding_mask)
-
-                """
-                pred = torch.unsqueeze(pred[~padding_mask], 0)
-                loss = loss_fn(pred, track_params)
-                """
+                pred = model(in_data_tensor, f'train_{i}', flex_padding_mask, timer)
                 # Create a mask to select the first L[batch] elements in the seq dimension
+
+                if timer:
+                    timer.start('unmasking_pred')
                 mask = torch.arange(pred.size(1), device=device).expand(len(length_tensor), pred.size(1)) < length_tensor.unsqueeze(1)
 
                 # Use the mask to select the required elements
                 pred = pred[mask].view(-1, pred.size(2))
+                out_data_tensor = out_data_tensor[mask].view(-1, out_data_tensor.size(2))
+                if timer:
+                    timer.stop()
+
+                if timer:
+                    timer.start('loss_calc')
                 loss = loss_fn(pred, out_data_tensor)
+                if timer:
+                    timer.stop()
                 
-            mean_loss = loss
-            scaler.scale(mean_loss).backward()
+            loss = loss / accumulation_steps  
+            if timer:
+                timer.start('backprop')
+            scaler.scale(loss).backward()
+            if timer:
+                timer.stop()
+            
+            if (i + 1) % accumulation_steps == 0:
+                if timer:
+                    timer.start('optimizer_step')
+                scaler.step(optim)
+                if timer:
+                    timer.stop()
+                scaler.update()
+                optim.zero_grad()
+
+            # for logging
+            total_loss_sum += loss.item()*accumulation_steps
+            total_count_sum += 1
+        
+        
+        remainder = len(train_loader) % accumulation_steps
+        if remainder != 0:
             scaler.step(optim)
             scaler.update()
             optim.zero_grad()
-
-            # for logging
-            total_loss_sum += mean_loss.item()
-            total_count_sum += 1
-            
-            del in_data_tensor, out_data_tensor, cluster_tensor, length_tensor, pred, mask, loss
-            if str(device) == 'cuda':
-                torch.cuda.empty_cache()
-
             
         # Other model types        
     else:
@@ -240,7 +234,7 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
             optim.step()
             total_loss_sum += loss.item()
             total_count_sum += 1
-    
+
     return total_loss_sum / total_count_sum
 
 def evaluate(model, validation_loader, loss_fn, device, config):
@@ -257,46 +251,25 @@ def evaluate(model, validation_loader, loss_fn, device, config):
     with torch.no_grad():
         if config_model_type == 'flex_attention':
             mask_on_clusters = config['model']['mask_on_clusters']
-            for i,  (in_data_tensor, out_data_tensor, cluster_tensor, length_tensor) in enumerate(validation_loader):
+            for i,  (data_tensor, length_tensor) in enumerate(validation_loader):
                 
-                """
-                num_events, hit_input_tensor, param_output_tensor, length_tensor, evt_tensor, clus_tensor = data
-
-                num_events = num_events[0].item()
-                # Move everything to GPU if available
-                hit_input_tensor = hit_input_tensor.to(device)
-                param_output_tensor = param_output_tensor.to(device)
-                length_tensor = length_tensor.squeeze(0).to(device)
-                evt_tensor = evt_tensor.squeeze(0).to(device)
-                clus_tensor = clus_tensor.squeeze(0).to(device)   
-                valid_length = int(length_tensor[0].item())
-                
-                _, hit_input_tensor, hits_seq_length, hits_masking, track_params, _ = data
-
-                hit_input_tensor = flatten_and_pad(hit_input_tensor, hits_seq_length)
-                track_params = flatten_and_pad(track_params, hits_seq_length)
-                hits_masking = flatten_and_pad(hits_masking, hits_seq_length)
-                hits_masking = hits_masking.squeeze(0)
-                length_tensor = hits_seq_length.sum().unsqueeze(0)
-                valid_length = int(length_tensor[0].item())
+                 
                 length_tensor = length_tensor.to(device)
 
-                hit_input_tensor, hits_seq_length, hits_masking, track_params = hit_input_tensor.to(device), hits_seq_length.to(device), hits_masking.to(device), track_params.to(device)
-                
-                "
-                padding_mask = (hit_input_tensor == PAD_TOKEN).all(dim=2)
-                track_params = torch.unsqueeze(track_params[~padding_mask], 0)
-                """
+                in_data_tensor_cpu   = data_tensor[..., :3]     
+                out_data_tensor_cpu  = data_tensor[..., 3:8]    
+                cluster_tensor_cpu   = data_tensor[..., 13:].squeeze(-1)
 
-                            # Pad the data tensor
-                in_data_tensor = in_data_tensor.to(device)
-                out_data_tensor = out_data_tensor.to(device)
-                cluster_tensor = cluster_tensor.to(device)
-                length_tensor = length_tensor.to(device)
+                in_data_tensor = in_data_tensor_cpu.to(device)
+                out_data_tensor = out_data_tensor_cpu.to(device)
+                cluster_tensor = cluster_tensor_cpu.to(device)
 
+                del in_data_tensor_cpu, out_data_tensor_cpu, cluster_tensor_cpu
+
+                # What to do with padded cluster tensor ?? 
                 
                 # Shall we remove import and padding mask generation from here?
-                from custom_model import generate_cluster_padding_mask, generate_padding_mask
+                
                 if mask_on_clusters:
                     flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
                 else:
@@ -305,25 +278,18 @@ def evaluate(model, validation_loader, loss_fn, device, config):
 
                 
                 with torch.amp.autocast('cuda'):
-                    pred = model(in_data_tensor, flex_padding_mask)
-                    
-                    """
-                    pred = torch.unsqueeze(pred[~padding_mask], 0)
-                    loss = loss_fn(pred, track_params)
-                    """
+                    pred = model(in_data_tensor, f'valid_{i}', flex_padding_mask)
+
                     # Unpad the pred tensor, output data tensor is not padded
                     mask = torch.arange(pred.size(1), device=device).expand(len(length_tensor), pred.size(1)) < length_tensor.unsqueeze(1)
                     pred = pred[mask].view(-1, pred.size(2))
+                    out_data_tensor = out_data_tensor[mask].view(-1, out_data_tensor.size(2))
                     loss = loss_fn(pred, out_data_tensor)
                     
 
                 # for validation and logging
                 total_loss_sum += loss.item()
                 total_count_sum += 1
-                del in_data_tensor, out_data_tensor, cluster_tensor, length_tensor, pred, loss, mask
-                if str(device) == 'cuda':
-                    torch.cuda.empty_cache()
-                
         else:
             for i, data in enumerate(validation_loader):
                 _, hits, hits_seq_length, hits_masking, track_params, _ = data
@@ -334,11 +300,6 @@ def evaluate(model, validation_loader, loss_fn, device, config):
 
                 pred = model(hits, padding_mask=padding_mask)
                 pred = torch.unsqueeze(pred[~padding_mask], 0)
-
-                # Get the weights for the loss function
-                #classes = torch.unsqueeze(classes[~padding_mask], 0)
-                #weights = classes[...,1]
-                #weights = weights.unsqueeze(-1)
             
                 loss = loss_fn(pred, track_params)
                 total_loss_sum += loss.item()
@@ -365,8 +326,6 @@ def main(config_path):
                                 job_type="training")
     wandb_logger.initialize()
     # Log the configuration
-
-
     logging.info(f'Loading config from {config_path} ')
     for key, value in config.items():
         logging.info(f'{key}: {value}')
@@ -391,26 +350,10 @@ def main(config_path):
     train_loader = None
     valid_loader = None
 
-    if config_model_type == 'flash_attention' or config_model_type == 'flex_attention':
+    if config_model_type == 'flex_attention':
         logging.info(f"FlashAttention available: {torch.backends.cuda.flash_sdp_enabled()}")
-        # Flash attention does not support batch size > 1
-        if config_model_type == 'flash_attention':
-            batch_size = 1
         scaler = torch.amp.GradScaler('cuda')
 
-        """
-        data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
-        hits_data, hits_data_seq_lengths, hits_masking, track_params_data, track_classes_data = load_trackml_data(data=data_path)
-        dataset = HitsDataset(hits_data, hits_data_seq_lengths, hits_masking, track_params_data, track_classes_data)
-        
-        train_loader, valid_loader, _ = get_dataloaders(dataset,
-                                                                train_frac=0.7,
-                                                                valid_frac=0.15,
-                                                                test_frac=0.15,
-                                                                batch_size=batch_size, drop_last=True)
-
-
-        """
         data_folder = config['data']['data_dir']
         logging.info(f'Loading data from {data_folder} ...')
         train_loader, valid_loader = get_train_valid_dataloaders(data_folder, batch_size=batch_size) 
@@ -429,12 +372,10 @@ def main(config_path):
                                                                 batch_size=batch_size, drop_last=True)
     logging.info(f'Data loaded.')
 
-
-
     # Set up the model, optimizer, and loss function
     model, optimizer,lr_scheduler, loss_fn, start_epoch = setup_training(config, device)
     model.attach_wandb_logger(wandb_logger)
-
+    timer = StepTimer(device)
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logging.info(f"Total Trainable Parameters: {total_params}")
     memory_stats = wandb_logger.get_system_memory_stats()
@@ -453,7 +394,7 @@ def main(config_path):
 
     for epoch in range(start_epoch, config['training']['total_epochs']):
         # Train the model
-        train_loss = train_epoch(model, optimizer, train_loader, loss_fn, device, config, scaler)
+        train_loss = train_epoch(model, optimizer, train_loader, loss_fn, device, config, scaler, timer)
 
         # Evaluate using validation split
         val_loss = evaluate(model, valid_loader, loss_fn, device, config)
@@ -470,10 +411,9 @@ def main(config_path):
         train_losses.append(train_loss)
         val_losses.append(val_loss)
 
-        #memory_stats = wandb_logger.get_system_memory_stats()
-        #logging.info(f"Memory stats: {memory_stats}")
-
-        wandb_logger.log({'train/train_loss' : train_loss, 'train/epoch' : epoch, 'train/validation loss' : val_loss, **memory_stats})
+        epoch_stats = timer.get_stats(reset=True) 
+        wandb_logger.log({'train/train_loss' : train_loss, 'train/epoch' : epoch,
+                           'train/validation loss' : val_loss, **epoch_stats})
 
         if val_loss < min_val_loss:
             # If the model has a new best validation loss, save it as "the best"

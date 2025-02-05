@@ -276,7 +276,7 @@ def calc_score_trackml(pred_lbl, true_lbl):
         pred_rows.append((ind, pred.item()))
     
     truth = pd.DataFrame(truth_rows)
-    truth.columns = ['hit_id', 'particle_id', 'weight', 'pt', 'eta']
+    truth.columns = ['hit_id', 'pt', 'eta', 'particle_id', 'weight']
     submission = pd.DataFrame(pred_rows)
     submission.columns = ['hit_id', 'track_id']
 
