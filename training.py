@@ -129,7 +129,7 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
         optim.zero_grad()
 
         for i, (data_tensor, length_tensor) in enumerate(train_loader):    
-            optim.zero_grad()
+
             if i % 100 == 0:
                 logging.info(f"Starting batch {i}")
             # Slice the data tensor
