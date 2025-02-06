@@ -13,6 +13,7 @@ import logging
 from coolname import generate_slug
 import wandb
 from data_processing.tensor_dataloader import get_test_dataloader
+from utils.timing_utils import StepTimer
 
 
 def load_model(config, device):
@@ -105,7 +106,7 @@ def load_model(config, device):
     model.eval()
     return model 
 
-def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, config, wandb_logger=None):
+def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, config, wandb_logger=None, timer=None):
     '''
     Evaluates the network on the test data. Returns the predictions and scores.
     '''
@@ -126,12 +127,16 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
     if config_model_type == 'flex_attention':
         for i,  (data_tensor, length_tensor) in enumerate(test_loader):
             
-            in_data_tensor = data_tensor[..., :3]
-            out_data_tensor = torch.cat((data_tensor[..., 11:13], data_tensor[..., 8:10]), dim=-1)
-            cluster_tensor = data_tensor[..., 13:]
+            in_data_tensor_cpu = data_tensor[..., :3]
+            out_data_tensor_cpu = torch.cat(( data_tensor[..., 8:10],data_tensor[..., 11:13]), dim=-1)
+            cluster_tensor_cpu = data_tensor[..., 13:].squeeze(-1)
             
-            in_data_tensor = in_data_tensor.to(device)
-            cluster_tensor = cluster_tensor.to(device)
+            in_data_tensor = in_data_tensor_cpu.to(device)
+            out_data_tensor = out_data_tensor_cpu.to(device)
+            cluster_tensor = cluster_tensor_cpu.to(device)
+
+            del in_data_tensor_cpu, out_data_tensor_cpu, cluster_tensor_cpu
+
             length_tensor = length_tensor.to(device)
 
             mask_on_clusters = config['model']['mask_on_clusters']
@@ -142,12 +147,20 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
                 flex_padding_mask = generate_padding_mask(length_tensor)
                 
             with torch.amp.autocast('cuda'):
-                pred = model(in_data_tensor, flex_padding_mask)
+                pred = model(in_data_tensor, f'test_{i}', flex_padding_mask, timer)
 
+            if timer:
+                timer.start('unmasking')
             pred_list = [pred[i, :length_tensor[i], :] for i in range(len(length_tensor))]
             out_data_tensor = [out_data_tensor[i, :length_tensor[i], :] for i in range(len(length_tensor))]
+            if timer:
+                timer.stop()
             
+            if timer:
+                timer.start('clustering')
             cluster_labels_list = clustering(pred_list, min_cl_size, min_samples)
+            if timer:
+                timer.stop()
 
             for cluster_labels, track_labels in zip(cluster_labels_list, out_data_tensor):
                 event_score, scores, nr_particles, predicted_tracks, true_tracks = calc_score_trackml(cluster_labels, track_labels)
@@ -159,11 +172,9 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
                             }
                     wandb_logger.log(metrics)
 
-            if device.type == "cuda":
-                torch.cuda.empty_cache()
 
-            if i % 10 == 0:
-                print(f"Processed {i} batches. Last score {scores_list[-1]}")
+            if i % 100 == 0:
+                logging.info(f"Processed {i} batches. Last score: {scores_list[-1]} Mean score so far {sum(scores_list) / len(scores_list)}")
 
 
     else:
@@ -222,7 +233,7 @@ def main(config_path):
         import re
         match = re.search(r'\d{8}_\d{6}_([a-zA-Z0-9-]+)_train', config['model']['checkpoint_path'])
         if match:
-            run_name = match.group(1) + generate_slug(1) + "_eval"
+            run_name = match.group(1) + "_" + generate_slug(2) + "_eval"
         else:
             run_name = generate_slug(3) + "_eval"
 
@@ -265,12 +276,14 @@ def main(config_path):
     """
     data_folder = config['data']['data_dir']
     logging.info(f'Loading data from {data_folder} ...')
-    test_loader = get_test_dataloader(data_folder, batch_size=16) 
+    batch_size = config['training']['batch_size']
+    test_loader = get_test_dataloader(data_folder, batch_size=batch_size) 
 
     logging.info("Data loaded")
 
     model = load_model(config, device)  
     model.attach_wandb_logger(wandb_logger)
+    timer = StepTimer(device)
 
     logging.info("Started evaluation")
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -280,12 +293,12 @@ def main(config_path):
     min_sam = wandb.config.min_samples if 'min_samples' in wandb.config else 3
     bin_ranges = config['bin_ranges']
 
-    avg_score = test_main(model, test_loader, cl_size, min_sam, bin_ranges, device, config, wandb_logger)
+    avg_score = test_main(model, test_loader, cl_size, min_sam, bin_ranges, device, config, wandb_logger, timer)
     print(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {avg_score}', flush=True)
     logging.info(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {avg_score}')
     #print(perfect, double_maj, lhc, flush=True)
-
-    wandb_logger.log({'total/cluster size' : cl_size, 'total/min sample size' : min_sam,'total/trackML score': avg_score})
+    timer_stats = timer.get_stats(reset=True)
+    wandb_logger.log({'total/cluster size' : cl_size, 'total/min sample size' : min_sam,'total/trackML score': avg_score, **timer_stats})
 
     wandb_logger.alert("Finished test", "Finished test")
     
