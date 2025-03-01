@@ -443,7 +443,7 @@ def generate_padding_mask(lengths):
 
     return padding_mask
 
-def generate_sliding_window_padding_mask(lengths, SLIDING_WINDOW=512):
+def generate_sliding_window_padding_eta_mask(lengths,  SLIDING_WINDOW=8192):
     """Generates mask mods that apply to inputs to flex attention in the sequence stacked
 
     """
@@ -455,7 +455,9 @@ def generate_sliding_window_padding_mask(lengths, SLIDING_WINDOW=512):
         d = (kv_idx - q_idx) % L
         d = torch.where(d > half_L, L - d, d)
 
-        return padding_mask & (d <= SLIDING_WINDOW)
+        #eta_mask = (eta_tensor[b, q_idx] - eta_tensor[b, kv_idx]).abs() < 0.1
+
+        return padding_mask & (d <= SLIDING_WINDOW) 
     return padding_mask
 
 def generate_cluster_padding_mask(lengths, cluster_id: Tensor):

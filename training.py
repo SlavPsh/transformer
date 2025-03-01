@@ -16,7 +16,7 @@ import os, sys
 from coolname import generate_slug
 from data_processing.dataset import HitsDataset, PAD_TOKEN, get_dataloaders, flatten_and_pad
 from data_processing.tensor_dataloader import get_train_valid_dataloaders
-from custom_model import generate_cluster_padding_mask, generate_padding_mask
+from custom_model import generate_cluster_padding_mask, generate_padding_mask, generate_sliding_window_padding_eta_mask
 
 
 def setup_training(config, device):
@@ -140,20 +140,25 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
 
             in_data_tensor_cpu = data_tensor[..., :3]
             out_data_tensor_cpu = data_tensor[..., 3:8]
-            cluster_tensor_cpu = data_tensor[..., 13:].squeeze(-1)
+            #cluster_tensor_cpu = data_tensor[..., 13].squeeze(-1)
+            #phi_tensor_cpu = data_tensor[..., 14].squeeze(-1)
+            #eta_coord_tensor_cpu = data_tensor[..., 13].squeeze(-1)
 
             in_data_tensor = in_data_tensor_cpu.to(device)
             out_data_tensor = out_data_tensor_cpu.to(device)
-            cluster_tensor = cluster_tensor_cpu.to(device)
+            #cluster_tensor = cluster_tensor_cpu.to(device)
+            #phi_tensor = phi_tensor_cpu.to(device)
+            #eta_coord_tensor = eta_coord_tensor_cpu.to(device)
 
-            del in_data_tensor_cpu, out_data_tensor_cpu, cluster_tensor_cpu
+            del in_data_tensor_cpu, out_data_tensor_cpu
             
             if timer:
                 timer.stop()
             # Shall we remove import and padding mask generation from here?
  
             if mask_on_clusters:
-                flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
+                #flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
+                flex_padding_mask = generate_sliding_window_padding_eta_mask(length_tensor)
             else:
                 flex_padding_mask = generate_padding_mask(length_tensor)
             #flex_padding_mask = generate_padding_mask(hits_seq_length)
@@ -222,12 +227,6 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
 
             pred = model(hits, padding_mask=padding_mask)
             pred = torch.unsqueeze(pred[~padding_mask], 0)
-
-            # Get the weights for the loss function
-            #classes = torch.unsqueeze(classes[~padding_mask], 0)
-            #weights = classes[...,1]
-            #weights = weights.unsqueeze(-1)
-            # Calculate loss and use it to update weights
         
             loss = loss_fn(pred, track_params)
             loss.backward()
@@ -258,20 +257,25 @@ def evaluate(model, validation_loader, loss_fn, device, config):
 
                 in_data_tensor_cpu   = data_tensor[..., :3]     
                 out_data_tensor_cpu  = data_tensor[..., 3:8]    
-                cluster_tensor_cpu   = data_tensor[..., 13:].squeeze(-1)
+                #cluster_tensor_cpu   = data_tensor[..., 13].squeeze(-1)
+                #phi_tensor_cpu       = data_tensor[..., 14].squeeze(-1)
+                #eta_coord_tensor_cpu  = data_tensor[..., 13].squeeze(-1)
 
                 in_data_tensor = in_data_tensor_cpu.to(device)
                 out_data_tensor = out_data_tensor_cpu.to(device)
-                cluster_tensor = cluster_tensor_cpu.to(device)
+                #cluster_tensor = cluster_tensor_cpu.to(device)
+                #phi_coord_tensor = phi_tensor_cpu.to(device)
+                #eta_coord_tensor = eta_coord_tensor_cpu.to(device)
 
-                del in_data_tensor_cpu, out_data_tensor_cpu, cluster_tensor_cpu
+                del in_data_tensor_cpu, out_data_tensor_cpu
 
                 # What to do with padded cluster tensor ?? 
                 
                 # Shall we remove import and padding mask generation from here?
                 
                 if mask_on_clusters:
-                    flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
+                    #flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
+                    flex_padding_mask = generate_sliding_window_padding_eta_mask(length_tensor)
                 else:
                     flex_padding_mask = generate_padding_mask(length_tensor)
                 #flex_padding_mask = generate_padding_mask(hits_seq_length)
