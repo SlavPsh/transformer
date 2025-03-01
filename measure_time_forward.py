@@ -1,4 +1,5 @@
-        import random
+"""        
+import random
         import pandas as pd
         
         # ----------------------------------------------------------------
@@ -126,3 +127,4 @@
         logging.info(f"Saved benchmark results to {csv_path}")
 
         assert False
+"""
