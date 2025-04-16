@@ -106,6 +106,35 @@ def load_model(config, device):
     model.eval()
     return model 
 
+
+def test_one_event(model, data_folder):
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    one_event_loader = get_test_dataloader(data_folder, batch_size=1)
+    for i,  (data_tensor, length_tensor) in enumerate(one_event_loader):
+        in_data_tensor_cpu = data_tensor[..., :3]
+        out_data_tensor_cpu =  torch.cat(( data_tensor[..., 9:11],data_tensor[..., 12:14]), dim=-1)
+        in_data_tensor = in_data_tensor_cpu.to(device)
+        out_data_tensor = out_data_tensor_cpu.to(device)
+        length_tensor = length_tensor.to(device)
+        
+
+        from custom_model import generate_padding_mask
+        flex_padding_mask = generate_padding_mask(length_tensor)
+
+        with torch.amp.autocast('cuda'):
+            pred = model(in_data_tensor, f'test_one_{i}', flex_padding_mask) 
+
+        pred_list = [pred[i, :length_tensor[i], :] for i in range(len(length_tensor))]
+        out_data_tensor = [out_data_tensor[i, :length_tensor[i], :] for i in range(len(length_tensor))]
+        cluster_labels_list = clustering(pred_list, 5, 3)
+        for cluster_labels, track_labels in zip(cluster_labels_list, out_data_tensor):
+            event_score, scores, nr_particles, predicted_tracks, true_tracks = calc_score_trackml(cluster_labels, track_labels, pt_threshold=0.9)
+            logging.info(f"TrackML score: {event_score}")
+            logging.info(f"Eff Scores: {scores}")
+        
+        break
+
+
 def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, config, wandb_logger=None, timer=None):
     '''
     Evaluates the network on the test data. Returns the predictions and scores.
@@ -128,23 +157,21 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
         for i,  (data_tensor, length_tensor) in enumerate(test_loader):
             
             in_data_tensor_cpu = data_tensor[..., :3]
-            out_data_tensor_cpu = torch.cat(( data_tensor[..., 8:10],data_tensor[..., 11:13]), dim=-1)
-            cluster_tensor_cpu = data_tensor[..., 13:].squeeze(-1)
+            #pd.DataFrame(truth_rows, columns=['hit_id',  THESE COLUMNS :  'pt', 'eta', 'particle_id', 'weight'])
+            out_data_tensor_cpu =  torch.cat(( data_tensor[..., 9:11],data_tensor[..., 12:14]), dim=-1)
+            
+            #out_data_tensor_cpu = torch.cat(( data_tensor[..., 8:10],data_tensor[..., 11:13]), dim=-1)
+            #cluster_tensor_cpu = data_tensor[..., 13:].squeeze(-1)
             
             in_data_tensor = in_data_tensor_cpu.to(device)
             out_data_tensor = out_data_tensor_cpu.to(device)
-            cluster_tensor = cluster_tensor_cpu.to(device)
-
-            del in_data_tensor_cpu, out_data_tensor_cpu, cluster_tensor_cpu
+            #cluster_tensor = cluster_tensor_cpu.to(device)
 
             length_tensor = length_tensor.to(device)
+            
+            from custom_model import generate_padding_mask
 
-            mask_on_clusters = config['model']['mask_on_clusters']
-            from custom_model import generate_padding_mask, generate_cluster_padding_mask
-            if mask_on_clusters:
-                flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
-            else:
-                flex_padding_mask = generate_padding_mask(length_tensor)
+            flex_padding_mask = generate_padding_mask(length_tensor)
                 
             with torch.amp.autocast('cuda'):
                 pred = model(in_data_tensor, f'test_{i}', flex_padding_mask, timer)
@@ -158,17 +185,58 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
             
             if timer:
                 timer.start('clustering')
+
+            """
+
+            cluster_labels_list = []
+            for evt_pred in pred_list:
+                # evt_pred.shape => (N, 6)
+                # The 6th dimension (evt_pred[:, 5]) is predicted pT.
+
+                # 1) Identify hits with pT>0.9
+                mask = (evt_pred[:, 5] > 0.9)
+                if not mask.any():
+                    # If no hits exceed 0.9 => entire event = -1
+                    cluster_labels = -1 * torch.ones(
+                        evt_pred.size(0),
+                        dtype=torch.long,
+                        device=evt_pred.device
+                    )
+                else:
+                    # 2) Take only subset of features (e.g. first 5 if your clustering uses them)
+                    subset_pred = evt_pred[mask, :5]
+
+                    # 3) Run your existing clustering function on this subset
+                    #    If your clustering(...) expects a list of events, pass [subset_pred]
+                    #    which returns a list of cluster labels (just 1 entry).
+                    sub_labels_list = clustering([subset_pred], min_cl_size, min_samples)
+                    sub_labels = sub_labels_list[0]  # shape (#hits_above_threshold,)
+
+                    # 4) Map subset labels back to full event => -1 for excluded hits
+                    cluster_labels = -1 * torch.ones(
+                        evt_pred.size(0),
+                        dtype=torch.long,
+                        device=evt_pred.device
+                    )
+                    sub_labels = sub_labels.to(evt_pred.device) 
+                    sub_labels = sub_labels.to(torch.long)
+                    cluster_labels[mask] = sub_labels
+
+                cluster_labels_list.append(cluster_labels)
+            """
+
             cluster_labels_list = clustering(pred_list, min_cl_size, min_samples)
             if timer:
                 timer.stop()
 
             for cluster_labels, track_labels in zip(cluster_labels_list, out_data_tensor):
-                event_score, scores, nr_particles, predicted_tracks, true_tracks = calc_score_trackml(cluster_labels, track_labels)
+                event_score, scores, nr_particles, predicted_tracks, true_tracks = calc_score_trackml(cluster_labels, track_labels, pt_threshold=0.9)
                 scores_list.append(event_score)
                 if wandb_logger != None:
                     metrics = {'batch/event score' : event_score, 
                             'batch/num_hits_per_event' : len(cluster_labels),
-                            'batch/num_particles_per_event' : nr_particles
+                            'batch/num_particles_per_event' : nr_particles,
+                            'batch/event_double_maj_score' : scores[1]
                             }
                     wandb_logger.log(metrics)
 
@@ -282,7 +350,7 @@ def main(config_path):
     logging.info("Data loaded")
 
     model = load_model(config, device)  
-    model.attach_wandb_logger(wandb_logger)
+    #model.attach_wandb_logger(wandb_logger)
     timer = StepTimer(device)
 
     logging.info("Started evaluation")

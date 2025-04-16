@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from typing import Optional
-from functools import lru_cache
+#from functools import lru_cache
 
 from torch import Tensor
 import logging
@@ -374,7 +374,7 @@ class TransformerRegressor(nn.Module):
     Takes the hits (i.e 2D or 3D coordinates) and outputs the probability of each
     hit belonging to each of the 20 possible tracks (classes).
     '''
-    def __init__(self, num_encoder_layers, d_model, n_head, input_size, output_size, dim_feedforward, dropout, wandb_logger=None):
+    def __init__(self, num_encoder_layers, d_model, n_head, input_size, output_size, dim_feedforward, dropout):
         super(TransformerRegressor, self).__init__()
         self.input_layer = nn.Linear(input_size, d_model)
 
@@ -384,11 +384,6 @@ class TransformerRegressor(nn.Module):
         self.num_heads = n_head
         self.mask_cache = {}
 
-        # Initialize the wandb logger
-        self.wandb_logger = wandb_logger
-        if self.wandb_logger is not None:
-            if self.wandb_logger.initialized == False:
-                self.wandb_logger.initialize()
 
     def forward(self, input, batch_name, flex_padding_mask, timer=None):
         # TODO: exclude input and output layer compute for padding tokens
@@ -396,37 +391,42 @@ class TransformerRegressor(nn.Module):
             timer.start('input_layer')
         x = self.input_layer(input)
         if timer:
+            torch.cuda.synchronize()
             timer.stop()
         B , S = input.size(0), input.size(1)
+        #S = input.size(0)
 
         # Do caching HERE 
         if timer:
             timer.start('block_mask')
-        if batch_name not in self.mask_cache:
-            self.mask_cache[batch_name] = create_block_mask_cached(flex_padding_mask, B, None, S, S, device=input.device)
+
+        #if batch_name not in self.mask_cache:
+        #    self.mask_cache[batch_name] = create_block_mask_cached(flex_padding_mask, B, None, S, S, device=input.device)
+        mask = create_block_mask_cached(flex_padding_mask, B, None, S, S, device=input.device)
 
         if timer:
+            torch.cuda.synchronize()
             timer.stop()
         
         if timer:
             timer.start('encoder')
-        memory = self.encoder(src=x, flex_mask=self.mask_cache[batch_name])
+        #memory = self.encoder(src=x, flex_mask=self.mask_cache[batch_name])
+        memory = self.encoder(src=x, flex_mask=mask)
         if timer:
+            torch.cuda.synchronize()
             timer.stop()
         if timer:
             timer.start('decoder')
         out = self.decoder(memory)
         if timer:
+            torch.cuda.synchronize()
             timer.stop()
         #if torch.isnan(memory).any(): 
         #    logging.error("Memory contains NaN values. Check attention mask.")
         #out = self.decoder(memory)
         return out
-    
-    def attach_wandb_logger(self, wandb_logger):
-        self.wandb_logger = wandb_logger
 
-@lru_cache
+#@lru_cache
 def create_block_mask_cached(score_mod, B, H, M, N, device="cuda"):
     block_mask = create_block_mask(score_mod, B, H, M, N, device=device, _compile=True)
     return block_mask
@@ -443,21 +443,22 @@ def generate_padding_mask(lengths):
 
     return padding_mask
 
-def generate_sliding_window_padding_eta_mask(lengths,  SLIDING_WINDOW=8192):
+def generate_sliding_window_padding_mask(lengths, SLIDING_WINDOW=1024):
     """Generates mask mods that apply to inputs to flex attention in the sequence stacked
 
     """
     def padding_mask(b, h, q_idx, kv_idx):
-        L = lengths[b]
+        length = lengths[b]
         # Can we pad query here as well?
-        padding_mask = (kv_idx < L)
-        half_L = L // 2
-        d = (kv_idx - q_idx) % L
-        d = torch.where(d > half_L, L - d, d)
+        padding_mask = (kv_idx < length)
+        half_L = length // 2
+        d = (kv_idx - q_idx) % length
+        d = torch.where(d > half_L, length - d, d)
 
-        #eta_mask = (eta_tensor[b, q_idx] - eta_tensor[b, kv_idx]).abs() < 0.1
+        #eta_mask1 = (index1[q_idx] == index1[kv_idx])
+        #eta_mask2 = (index2[q_idx] == index2[kv_idx])
 
-        return padding_mask & (d <= SLIDING_WINDOW) 
+        return (d <= SLIDING_WINDOW) & padding_mask
     return padding_mask
 
 def generate_cluster_padding_mask(lengths, cluster_id: Tensor):
@@ -470,6 +471,19 @@ def generate_cluster_padding_mask(lengths, cluster_id: Tensor):
         #kv_logical = kv_idx - offsets[document_id[kv_idx]]
         #inner_mask = mask_mod(b, h, q_logical, kv_logical)
         return padding_mask & same_doc
+
+    return doc_mask_mod
+
+
+def generate_only_cluster_mask(cluster_id: Tensor):
+
+    def doc_mask_mod(b, h, q_idx, kv_idx):
+        # Can we pad query here as well?
+        same_doc = (cluster_id[q_idx] == cluster_id[kv_idx]) 
+        #q_logical = q_idx - offsets[document_id[q_idx]]
+        #kv_logical = kv_idx - offsets[document_id[kv_idx]]
+        #inner_mask = mask_mod(b, h, q_logical, kv_logical)
+        return same_doc
 
     return doc_mask_mod
 

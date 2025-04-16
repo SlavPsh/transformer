@@ -1,5 +1,6 @@
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
+
 
 class EventDataset(Dataset):
     """
@@ -38,14 +39,14 @@ def load_split_dataset(folder_path, split="train"):
     length_file = f"{folder_path}/{split}_lengths.pt"
 
     # Load the saved PyTorch tensors
-    data_tensor = torch.load(data_file)      # shape (N, max_len, 14)
-    lengths_tensor = torch.load(length_file) # shape (N,)
+    data_tensor = torch.load(data_file, map_location="cpu")      # shape (N, max_len, 14)
+    lengths_tensor = torch.load(length_file, map_location="cpu") # shape (N,)
 
     dataset = EventDataset(data_tensor, lengths_tensor)
     return dataset
 
 
-def get_train_valid_dataloaders(folder_path, batch_size=8, num_workers=0):
+def get_train_valid_dataloaders(folder_path, batch_size=8, num_workers=0, train_fraction=1.0):
     """
     Returns 2 DataLoaders: train, valid
     Each will yield batches of shape (batch_size, max_len, 14)
@@ -55,11 +56,19 @@ def get_train_valid_dataloaders(folder_path, batch_size=8, num_workers=0):
     batch_size: int
     num_workers: used by DataLoader for multi-process data loading
     """
+    gen = torch.Generator()
+    gen.manual_seed(37)  
+
+
     train_ds = load_split_dataset(folder_path, split="train")
     valid_ds = load_split_dataset(folder_path, split="valid")
+    
+    if train_fraction < 1.0:
+        num_train = int(len(train_ds) * train_fraction)
+        train_ds, _ = random_split(train_ds, [num_train, len(train_ds) - num_train], generator= gen)
     # Typically we shuffle train, not valid/test:
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                              num_workers=num_workers)
+                              num_workers=num_workers, generator = gen)
     valid_loader = DataLoader(valid_ds, batch_size=batch_size, shuffle=False,
                               num_workers=num_workers)
 

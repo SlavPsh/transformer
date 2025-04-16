@@ -8,6 +8,31 @@ from  scipy.stats import beta
 import pandas as pd
 import pickle
 
+def get_system_memory_stats():
+    # GPU memory stats (in MB)
+    if torch.cuda.is_available():
+        gpu_memory_allocated = torch.cuda.memory_allocated() / (1024 * 1024)
+        gpu_memory_reserved = torch.cuda.memory_reserved() / (1024 * 1024)
+    else:
+        gpu_memory_allocated = 0
+        gpu_memory_reserved = 0
+
+    # CPU memory stats (in MB)
+    # Get the current process
+    process = psutil.Process()
+
+    # Get memory information for the process
+    memory_info = process.memory_info()
+
+    # memory_info.rss gives the Resident Set Size, the memory actually used by the process in bytes
+    cpu_used_memory = memory_info.rss  # Memory used by this process in bytes
+    cpu_used_memory_mb = cpu_used_memory / (1024 ** 2)  # Convert to MB
+
+    return {
+        'gpu_memory_allocated_mb': gpu_memory_allocated,
+        'gpu_memory_reserved_mb': gpu_memory_reserved,
+        'cpu_memory_used_mb': cpu_used_memory_mb
+    }
 
 class WandbLogger:
     def __init__(
@@ -53,31 +78,6 @@ class WandbLogger:
             self.initialize()
         self.run.alert(title=ttl, text=txt)
 
-    def get_system_memory_stats(self):
-        # GPU memory stats (in MB)
-        if torch.cuda.is_available():
-            gpu_memory_allocated = torch.cuda.memory_allocated() / (1024 * 1024)
-            gpu_memory_reserved = torch.cuda.memory_reserved() / (1024 * 1024)
-        else:
-            gpu_memory_allocated = 0
-            gpu_memory_reserved = 0
-
-        # CPU memory stats (in MB)
-        # Get the current process
-        process = psutil.Process()
-
-        # Get memory information for the process
-        memory_info = process.memory_info()
-
-        # memory_info.rss gives the Resident Set Size, the memory actually used by the process in bytes
-        cpu_used_memory = memory_info.rss  # Memory used by this process in bytes
-        cpu_used_memory_mb = cpu_used_memory / (1024 ** 2)  # Convert to MB
-    
-        return {
-            'gpu_memory_allocated_mb': gpu_memory_allocated,
-            'gpu_memory_reserved_mb': gpu_memory_reserved,
-            'cpu_memory_used_mb': cpu_used_memory_mb
-        }
 
     def log_gradient_norm(self, model):
         if not self.initialized:

@@ -261,44 +261,93 @@ def calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges):
 
     return all_bin_scores
 
+def calc_score_trackml(pred_lbl, true_lbl, pt_threshold=0.9):
+    """
+    Calculates the TrackML score and efficiency scores for a single event, 
+    but only counting tracks with pt > pt_threshold for the efficiency
+    (including the count of 'n_particles').
 
-def calc_score_trackml(pred_lbl, true_lbl):
+    Parameters
+    ----------
+    pred_lbl : array-like
+        Predicted cluster labels for each hit (same order as 'true_lbl').
+    true_lbl : array-like
+        True info for each hit, shaped e.g. (N,4): [pt, eta, particle_id, weight]
+        or your arrangement. The 1st entry is pt, 2nd is eta, 3rd is particle_id, 4th is weight.
+    pt_threshold : float, optional
+        Only tracks above this pt are included in efficiency calculations,
+        including the count of n_particles.
+
+    Returns
+    -------
+    event_score : float
+        Overall event score (all hits) from `score_event(...)`.
+    eff_scores  : object
+        Efficiency-related metrics. Here only the subset with pt > pt_threshold is included.
+    n_particles_cut : int
+        Number of unique particle_ids with pt>pt_threshold (the denominator for efficiency).
+    tracks      : pd.DataFrame
+        Detailed table merging predicted cluster info with major_particle_id plus 'pt','eta'.
+    true_tracks : pd.DataFrame
+        Aggregated truth table (grouped by particle_id with columns [pt, eta, weight]).
     """
-    Function for calculating the TrackML score and efficiency scores of TrackML data, based 
-    on the predicted cluster labels pred_lbl and true particle IDs true_lbl from a single
-    event. 
-    """
-    truth_rows, pred_rows = [], []
+    # Build data rows from `true_lbl` => each element ~ [pt, eta, pid, weight]
+    truth_rows = []
     for ind, part in enumerate(true_lbl):
+        # part => [pt, eta, particle_id, weight]
         truth_rows.append((ind, part[0].item(), part[1].item(), part[2].item(), part[3].item()))
-
+        
+    # Build data rows from predicted cluster labels => one label per hit
+    pred_rows = []
     for ind, pred in enumerate(pred_lbl):
         pred_rows.append((ind, pred.item()))
     
-    truth = pd.DataFrame(truth_rows)
-    truth.columns = ['hit_id', 'pt', 'eta', 'particle_id', 'weight']
-    submission = pd.DataFrame(pred_rows)
-    submission.columns = ['hit_id', 'track_id']
+    # Construct dataframes
+    truth = pd.DataFrame(truth_rows, columns=['hit_id', 'pt', 'eta', 'particle_id', 'weight'])
+    submission = pd.DataFrame(pred_rows, columns=['hit_id', 'track_id'])
+    
+    # Merge predicted cluster IDs with the truth info
+    tracks = _analyze_tracks(
+        truth[['hit_id', 'particle_id', 'weight']], 
+        submission
+    )
 
-    nr_particles = len(truth['particle_id'].unique().tolist())
-
-    tracks = _analyze_tracks(truth[['hit_id', 'particle_id', 'weight']], submission) 
-    # Add additional columns to the tracks dataframe from particle info for analysis
+    # Normalize total weight
     total_weight = truth['weight'].sum()
     truth['weight'] = truth['weight'] / total_weight
-    
+
+    # Compute "event_score" on all hits/tracks (unchanged logic)
     event_score = score_event(tracks)
 
-    #truth_unique = truth[['particle_id', 'theta', 'sin_phi', 'q', 'log_p']].drop_duplicates(subset='particle_id')
-    true_tracks = truth.groupby('particle_id').agg({
-    'hit_id': 'count',
-    'pt': 'first',
-    'eta': 'first',
-    'weight': 'sum'
-    }).reset_index()
+    # Build 'true_tracks' with aggregated info by particle_id
+    true_tracks = truth.groupby('particle_id', as_index=False).agg({
+        'hit_id':  'count',
+        'pt':      'first',
+        'eta':     'first',
+        'weight':  'sum'
+    })
 
-    tracks = tracks.merge(true_tracks[['particle_id', 'pt', 'eta']], left_on='major_particle_id', right_on='particle_id', how='left')
-    return event_score, efficiency_scores(tracks, nr_particles), nr_particles, tracks, true_tracks
+    # Attach 'pt','eta' from the major_particle_id to the `tracks` DataFrame
+    tracks = tracks.merge(
+        true_tracks[['particle_id','pt','eta']], 
+        left_on='major_particle_id', 
+        right_on='particle_id', 
+        how='left'
+    )
+
+    # Filter out only high-pt tracks for efficiency
+    highpt_tracks = tracks[tracks['pt'] > pt_threshold].copy()
+
+    # Also count how many unique particles had pt>pt_threshold
+    # => for the denominator in efficiency
+    true_tracks_cut = true_tracks[true_tracks['pt'] > pt_threshold]
+    n_particles_cut = len(true_tracks_cut['particle_id'].unique())
+
+    # Compute efficiency on the subset of tracks with pt>pt_threshold
+    eff_scores = efficiency_scores(highpt_tracks, n_particles_cut)
+
+    return event_score, eff_scores, n_particles_cut, tracks, true_tracks
+
 
 
 def calc_edge_efficiency(pred_lbl, true_lbl):
