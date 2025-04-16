@@ -193,14 +193,14 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
     torch.set_grad_enabled(True)
     model.train()
     total_loss_sum = 0.
-    total_count_sum = 0+1
+    total_count_sum = 0
 
 
     if config_model_type == 'flex_attention':
         accumulation_steps = 4
         optim.zero_grad()
 
-        WAIT, WARMUP, ACTIVE, REPEAT = 50, 40, 100, 1
+        WAIT, WARMUP, ACTIVE, REPEAT = 50, 40, 50, 1
 
         # Create a torch.profiler.profile object, and call it as the last part of the training loop
         with torch.profiler.profile(
@@ -267,7 +267,6 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
                 with torch.amp.autocast('cuda'):  
                     
                     pred = model(in_data_tensor, f'train_{i}', flex_padding_mask, timer)
-                """
                     if i % 100 == 0:
                         memory_stats = get_system_memory_stats()
                         logging.info(f"Memory stats after forward: {memory_stats}")
@@ -299,14 +298,12 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
 
 
                     if timer:
-                        torch.cuda.synchronize()
                         timer.stop()
 
                     if timer:
                         timer.start('loss_calc')
                     loss = loss_fn(pred, out_data_tensor)
                     if timer:
-                        torch.cuda.synchronize()
                         timer.stop()
                 
                 if (loss is None ) or (loss.item() is None):
@@ -319,7 +316,6 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
                 scaler.scale(loss).backward()
 
                 if timer:
-                    torch.cuda.synchronize()
                     timer.stop()
 
                 if i % 100 == 0:
@@ -342,7 +338,6 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
                         timer.start('optimizer_step')
                     scaler.step(optim)
                     if timer:
-                        torch.cuda.synchronize()
                         timer.stop()
                     scaler.update()
                     optim.zero_grad()
@@ -351,7 +346,7 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
                 total_loss_sum += loss.item()*accumulation_steps
                 total_count_sum += 1
 
-                """
+                
 
                 p.step()
                 
@@ -360,14 +355,12 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
                     break
 
         
-        """
+        
         remainder = len(train_loader) % accumulation_steps
         if remainder != 0:
             scaler.step(optim)
             scaler.update()
             optim.zero_grad()
-
-        """
             
         # Other model types        
     else:
@@ -404,7 +397,7 @@ def evaluate(model, validation_loader, loss_fn, device, config):
     # Get the network in evaluation mode
     model.eval()
     total_loss_sum = 0.
-    total_count_sum = 0+1
+    total_count_sum = 0
 
     with torch.no_grad():
         if config_model_type == 'flex_attention':
@@ -430,7 +423,7 @@ def evaluate(model, validation_loader, loss_fn, device, config):
                 # What to do with padded cluster tensor ?? 
                 
                 # Shall we remove import and padding mask generation from here?
-                """
+                
                 #flex_padding_mask = generate_padding_mask(length_tensor)
                 flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
                 #flex_padding_mask = generate_sliding_window_padding_mask(length_tensor)
@@ -464,7 +457,7 @@ def evaluate(model, validation_loader, loss_fn, device, config):
                 total_loss_sum += loss.item()
                 total_count_sum += 1
 
-                """
+                
         else:
             for i, data in enumerate(validation_loader):
                 _, hits, hits_seq_length, hits_masking, track_params, _ = data

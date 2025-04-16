@@ -382,8 +382,22 @@ class TransformerRegressor(nn.Module):
         self.encoder = CustomTransformerEncoder(encoder_layers, num_encoder_layers, enable_nested_tensor=False)
         self.decoder = nn.Linear(d_model, output_size)
         self.num_heads = n_head
-        self.mask_cache = {}
+        self.mask_cache_cpu = {}  # { key: pinned_cpu_tensor }
 
+    def build_or_reuse_gpu_mask(self, key, score_mod, B, S):
+        # if mask is already on CPU
+        if key in self.mask_cache_cpu:
+            # load from CPU to GPU
+            return self.mask_cache_cpu[key].to(device='cuda')
+
+        # otherwise, build on GPU once
+        mask_gpu = create_block_mask(score_mod, B, None, S, S, device='cuda', _compile=True)
+
+        # then store a CPU copy for future re-use
+        mask_cpu = mask_gpu.to(device='cpu')
+        self.mask_cache_cpu[key] = mask_cpu
+
+        return mask_gpu
 
     def forward(self, input, batch_name, flex_padding_mask, timer=None):
         # TODO: exclude input and output layer compute for padding tokens
@@ -400,9 +414,13 @@ class TransformerRegressor(nn.Module):
         if timer:
             timer.start('block_mask')
 
+        # fetch or create pinned CPU mask
+        key = (batch_name, B, S)
+        mask_gpu = self.build_or_reuse_gpu_mask(key, flex_padding_mask, B, S)
+
         #if batch_name not in self.mask_cache:
         #    self.mask_cache[batch_name] = create_block_mask_cached(flex_padding_mask, B, None, S, S, device=input.device)
-        mask = create_block_mask_cached(flex_padding_mask, B, None, S, S, device=input.device)
+        #mask = create_block_mask_cached(flex_padding_mask, B, None, S, S, device=input.device)
 
         if timer:
             torch.cuda.synchronize()
@@ -411,7 +429,7 @@ class TransformerRegressor(nn.Module):
         if timer:
             timer.start('encoder')
         #memory = self.encoder(src=x, flex_mask=self.mask_cache[batch_name])
-        memory = self.encoder(src=x, flex_mask=mask)
+        memory = self.encoder(src=x, flex_mask=mask_gpu)
         if timer:
             torch.cuda.synchronize()
             timer.stop()
