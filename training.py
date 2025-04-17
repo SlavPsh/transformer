@@ -119,7 +119,6 @@ def setup_training(config, device):
         # For better performance, you can use:
         # flex_attention = torch.compile(_flex_attention, dynamic=False, mode="max-autotune-no-cudagraphs")
 
-
         model = TransformerRegressor(
             num_encoder_layers = num_encoder_layers,
             d_model = d_model,
@@ -129,8 +128,6 @@ def setup_training(config, device):
             dim_feedforward=dim_feedforward,
             dropout=config['model']['dropout']
         ).to(device)
-
-
 
     # optimizer
     initial_lr =  wandb.config.initial_lr if hasattr(wandb.config, 'initial_lr') else config['training']['scheduler']['initial_lr']
@@ -188,6 +185,8 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
     backpropagation. Returns the average loss over the whole train data.
     '''
     config_model_type = config['model']['type']
+    input_size = config['model']['input_size']
+    output_size = config['model']['output_size']
     
     # Get the network in train mode
     torch.set_grad_enabled(True)
@@ -199,6 +198,9 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
     if config_model_type == 'flex_attention':
         accumulation_steps = 4
         optim.zero_grad()
+
+        """
+        # MEMORY PROFILING
 
         WAIT, WARMUP, ACTIVE, REPEAT = 50, 40, 50, 1
 
@@ -219,142 +221,139 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
             profile_memory=True,  # This will take 1 to 2 minutes. Setting it to False could greatly speedup.
             with_stack=True
         ) as p:
+        """
 
-            for i, (data_tensor, length_tensor) in enumerate(train_loader):    
+        for i, (data_tensor, length_tensor) in enumerate(train_loader):    
 
-                if i % 100 == 0:
-                    logging.info(f"Starting batch {i}")
-                    memory_stats = get_system_memory_stats()
-                    logging.info(f"Memory stats start of epoch: {memory_stats}")
+            if i % 100 == 0:
+                logging.info(f"Starting batch {i}")
+                memory_stats = get_system_memory_stats()
+                logging.info(f"Memory stats start of epoch: {memory_stats}")
 
-                    if timer:
-                        stats = timer.get_stats(reset=False)
-                        logging.info(f"Accum Timer stats: {stats}")
-                # Slice the data tensor
-
-                
-                length_tensor = length_tensor.squeeze(0)
-
-                in_data_tensor_cpu = data_tensor[..., :3]
-                out_data_tensor_cpu = data_tensor[..., 3:9]
-                # Unpad the data tensor
-                #mask = torch.arange(in_data_tensor_cpu.size(1)).expand(1, in_data_tensor_cpu.size(1)) < length_tensor
-                #in_data_tensor_cpu = in_data_tensor_cpu[mask].view(-1, in_data_tensor_cpu.size(2))
-                #out_data_tensor_cpu = out_data_tensor_cpu[mask].view(-1, out_data_tensor_cpu.size(2))
-                cluster_tensor_cpu = data_tensor[..., -1].squeeze(-1)
-                #phi_tensor_cpu = data_tensor[..., 14].squeeze(-1)
-
-                length_tensor = length_tensor.to(device)
-                in_data_tensor = in_data_tensor_cpu.to(device)
-                out_data_tensor = out_data_tensor_cpu.to(device)
-                cluster_tensor = cluster_tensor_cpu.to(device)
-
-                
-                #phi_tensor = phi_tensor_cpu.to(device)
-                #eta_coord_tensor = eta_coord_tensor_cpu.to(device)
-                if i % 100 == 0:
-                    memory_stats = get_system_memory_stats()
-                    logging.info(f"Memory stats tensors are on GPU : {memory_stats}")
-
-
-                # Shall we remove import and padding mask generation from here?
-
-                #flex_padding_mask = generate_padding_mask(length_tensor)
-                flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
-                #flex_padding_mask = generate_sliding_window_padding_mask(length_tensor)
-                
-                    
-                with torch.amp.autocast('cuda'):  
-                    
-                    pred = model(in_data_tensor, f'train_{i}', flex_padding_mask, timer)
-                    if i % 100 == 0:
-                        memory_stats = get_system_memory_stats()
-                        logging.info(f"Memory stats after forward: {memory_stats}")
-                    # Create a mask to select the first L[batch] elements in the seq dimension
-
-                    if timer:
-                        timer.start('unmasking_pred')
-
-
-                    batched_pred = []
-                    batched_target = []
-
-                    B = len(length_tensor)
-
-                    for b_idx in range(B):
-                        if B == 1:
-                            seq_len = length_tensor.item()
-                        else:
-                            seq_len = length_tensor[b_idx].item()
-                        # unpad just [0..seq_len) for pred
-                        this_pred = pred[b_idx, :seq_len, :]
-                        this_target = out_data_tensor[b_idx, :seq_len, :]
-                        batched_pred.append(this_pred)
-                        batched_target.append(this_target)
-
-                    
-                    pred = torch.cat(batched_pred, dim=0)
-                    out_data_tensor = torch.cat(batched_target, dim=0)
-
-
-                    if timer:
-                        timer.stop()
-
-                    if timer:
-                        timer.start('loss_calc')
-                    loss = loss_fn(pred, out_data_tensor)
-                    if timer:
-                        timer.stop()
-                
-                if (loss is None ) or (loss.item() is None):
-                    logging.info(f"Loss is None for batch {i}")
-                    raise RuntimeError("Loss is None")
-                    
-                loss = loss / accumulation_steps  
                 if timer:
-                    timer.start('backprop')
-                scaler.scale(loss).backward()
+                    stats = timer.get_stats(reset=False)
+                    logging.info(f"Accum Timer stats: {stats}")
+            # Slice the data tensor
+
+            length_tensor = length_tensor.squeeze(0)
+
+            in_data_tensor_cpu = data_tensor[..., :input_size]
+            out_data_tensor_cpu = data_tensor[..., input_size:input_size + output_size]
+            # Unpad the data tensor
+            #mask = torch.arange(in_data_tensor_cpu.size(1)).expand(1, in_data_tensor_cpu.size(1)) < length_tensor
+            #in_data_tensor_cpu = in_data_tensor_cpu[mask].view(-1, in_data_tensor_cpu.size(2))
+            #out_data_tensor_cpu = out_data_tensor_cpu[mask].view(-1, out_data_tensor_cpu.size(2))
+            #cluster_tensor_cpu = data_tensor[..., -1].squeeze(-1)
+            #phi_tensor_cpu = data_tensor[..., 14].squeeze(-1)
+
+            length_tensor = length_tensor.to(device)
+            in_data_tensor = in_data_tensor_cpu.to(device)
+            out_data_tensor = out_data_tensor_cpu.to(device)
+            #cluster_tensor = cluster_tensor_cpu.to(device)
+            
+            #phi_tensor = phi_tensor_cpu.to(device)
+            #eta_coord_tensor = eta_coord_tensor_cpu.to(device)
+            if i % 100 == 0:
+                memory_stats = get_system_memory_stats()
+                logging.info(f"Memory stats tensors are on GPU : {memory_stats}")
+
+
+            # Shall we remove import and padding mask generation from here?
+
+            flex_padding_mask = generate_padding_mask(length_tensor)
+            #flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
+            #flex_padding_mask = generate_sliding_window_padding_mask(length_tensor)
+            
+                
+            with torch.amp.autocast('cuda'):  
+                
+                pred = model(in_data_tensor, f'train_{i}', flex_padding_mask, timer)
+                if i % 100 == 0:
+                    memory_stats = get_system_memory_stats()
+                    logging.info(f"Memory stats after forward: {memory_stats}")
+                # Create a mask to select the first L[batch] elements in the seq dimension
+
+                if timer:
+                    timer.start('unmasking_pred')
+
+
+                batched_pred = []
+                batched_target = []
+
+                B = len(length_tensor)
+
+                for b_idx in range(B):
+                    if B == 1:
+                        seq_len = length_tensor.item()
+                    else:
+                        seq_len = length_tensor[b_idx].item()
+                    # unpad just [0..seq_len) for pred
+                    this_pred = pred[b_idx, :seq_len, :]
+                    this_target = out_data_tensor[b_idx, :seq_len, :]
+                    batched_pred.append(this_pred)
+                    batched_target.append(this_target)
+
+                
+                pred = torch.cat(batched_pred, dim=0)
+                out_data_tensor = torch.cat(batched_target, dim=0)
+
 
                 if timer:
                     timer.stop()
 
-                if i % 100 == 0:
-                    memory_stats = get_system_memory_stats()
-                    logging.info(f"Memory stats after backprop: {memory_stats}")
-
-                # Check for non-finite gradients
+                if timer:
+                    timer.start('loss_calc')
+                loss = loss_fn(pred, out_data_tensor)
+                if timer:
+                    timer.stop()
+            
+            if (loss is None ) or (loss.item() is None):
+                logging.info(f"Loss is None for batch {i}")
+                raise RuntimeError("Loss is None")
                 
-                for name, param in model.named_parameters():
-                    if param.grad is not None:
-                        if not torch.isfinite(param.grad).all():
-                            logging.info(f"[Non-finite Gradient] {name}  !!!")
-                            #raise RuntimeError("NaN/Inf gradient detected!")
-                        
-                # Add gradient clipping 
-                #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            loss = loss / accumulation_steps  
+            if timer:
+                timer.start('backprop')
+            scaler.scale(loss).backward()
+
+            if timer:
+                timer.stop()
+
+            if i % 100 == 0:
+                memory_stats = get_system_memory_stats()
+                logging.info(f"Memory stats after backprop: {memory_stats}")
+
+            # Check for non-finite gradients
+            
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    if not torch.isfinite(param.grad).all():
+                        logging.info(f"[Non-finite Gradient] {name}  !!!")
+                        #raise RuntimeError("NaN/Inf gradient detected!")
+                    
+            # Add gradient clipping 
+            #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
+            if (i + 1) % accumulation_steps == 0:
+                if timer:
+                    timer.start('optimizer_step')
+                scaler.step(optim)
+                if timer:
+                    timer.stop()
+                scaler.update()
+                optim.zero_grad()
+
+            # for logging
+            total_loss_sum += loss.item()*accumulation_steps
+            total_count_sum += 1
                 
-                if (i + 1) % accumulation_steps == 0:
-                    if timer:
-                        timer.start('optimizer_step')
-                    scaler.step(optim)
-                    if timer:
-                        timer.stop()
-                    scaler.update()
-                    optim.zero_grad()
-
-                # for logging
-                total_loss_sum += loss.item()*accumulation_steps
-                total_count_sum += 1
-
-                
-
+            """
                 p.step()
                 
                 # Allow to break early for the purpose of shorter profiling
                 if i == (WAIT + WARMUP + ACTIVE) * REPEAT:
                     break
-
-        
+            """
         
         remainder = len(train_loader) % accumulation_steps
         if remainder != 0:
@@ -394,6 +393,8 @@ def evaluate(model, validation_loader, loss_fn, device, config):
     calculating the loss. Returns the average loss over the whole val data.
     '''
     config_model_type = config['model']['type']
+    input_size = config['model']['input_size']
+    output_size = config['model']['output_size']
     # Get the network in evaluation mode
     model.eval()
     total_loss_sum = 0.
@@ -404,19 +405,19 @@ def evaluate(model, validation_loader, loss_fn, device, config):
             for i,  (data_tensor, length_tensor) in enumerate(validation_loader):    
                 length_tensor = length_tensor.squeeze(0)
 
-                in_data_tensor_cpu   = data_tensor[..., :3]     
-                out_data_tensor_cpu  = data_tensor[..., 3:9] 
+                in_data_tensor_cpu   = data_tensor[..., :input_size]     
+                out_data_tensor_cpu  = data_tensor[..., input_size:input_size + output_size] 
                 #mask = torch.arange(in_data_tensor_cpu.size(1)).expand(1, in_data_tensor_cpu.size(1)) < length_tensor
                 #in_data_tensor_cpu = in_data_tensor_cpu[mask].view(-1, in_data_tensor_cpu.size(2))
                 #out_data_tensor_cpu = out_data_tensor_cpu[mask].view(-1, out_data_tensor_cpu.size(2))   
-                cluster_tensor_cpu   = data_tensor[..., -1].squeeze(-1)
+                #cluster_tensor_cpu   = data_tensor[..., -1].squeeze(-1)
                 #phi_tensor_cpu       = data_tensor[..., 14].squeeze(-1)
 
 
                 length_tensor = length_tensor.to(device)
                 in_data_tensor = in_data_tensor_cpu.to(device)
                 out_data_tensor = out_data_tensor_cpu.to(device)
-                cluster_tensor = cluster_tensor_cpu.to(device)
+                #cluster_tensor = cluster_tensor_cpu.to(device)
                 #phi_coord_tensor = phi_tensor_cpu.to(device)
                 #eta_coord_tensor = eta_coord_tensor_cpu.squeeze(0).to(device)
 
@@ -424,8 +425,8 @@ def evaluate(model, validation_loader, loss_fn, device, config):
                 
                 # Shall we remove import and padding mask generation from here?
                 
-                #flex_padding_mask = generate_padding_mask(length_tensor)
-                flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
+                flex_padding_mask = generate_padding_mask(length_tensor)
+                #flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
                 #flex_padding_mask = generate_sliding_window_padding_mask(length_tensor)
 
                 
@@ -445,18 +446,15 @@ def evaluate(model, validation_loader, loss_fn, device, config):
                         this_target = out_data_tensor[b_idx, :seq_len, :]
                         batched_pred.append(this_pred)
                         batched_target.append(this_target)
-
                     
                     pred = torch.cat(batched_pred, dim=0)
                     out_data_tensor = torch.cat(batched_target, dim=0)
 
                     loss = loss_fn(pred, out_data_tensor)
                     
-
                 # for validation and logging
                 total_loss_sum += loss.item()
                 total_count_sum += 1
-
                 
         else:
             for i, data in enumerate(validation_loader):
@@ -559,20 +557,10 @@ def main(config_path):
     train_losses, val_losses = [], []
     min_val_loss = np.inf
     count = 0
-    """
-    with torch.profiler.profile(
-    activities=[
-      torch.profiler.ProfilerActivity.CPU,
-      torch.profiler.ProfilerActivity.CUDA,
-    ],
-    profile_memory=True,  # <-- track GPU memory
-    record_shapes=True
-    ) as prof:
-    """
+
     for epoch in range(start_epoch, config['training']['total_epochs']):
         # Train the model
         train_loss = train_epoch(model, optimizer, train_loader, loss_fn, device, config, scaler, timer)
-        #prof.step()
 
         # Evaluate using validation split
         val_loss = evaluate(model, valid_loader, loss_fn, device, config)
@@ -609,7 +597,6 @@ def main(config_path):
             logging.info("Early stopping triggered")
             break
 
-    #print(prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=20))
     
     logging.info("Finished training")
     wandb_logger.alert("Finished training", "Finished training")
