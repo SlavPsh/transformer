@@ -36,19 +36,6 @@ def load_model(config, device):
                 dim_feedforward=config['model']['dim_feedforward'],
                 dropout=config['model']['dropout']
             ).to(device)
-    elif config_model_type == 'flash_attention':
-        from flash_model import TransformerRegressor
-        print("FlashAttention available:", torch.backends.cuda.flash_sdp_enabled())
-
-        model = TransformerRegressor(
-            num_encoder_layers = config['model']['num_encoder_layers'],
-            d_model = config['model']['d_model'],
-            n_head=config['model']['n_head'],
-            input_size = config['model']['input_size'],
-            output_size = config['model']['output_size'],
-            dim_feedforward=config['model']['dim_feedforward'],
-            dropout=config['model']['dropout']
-        ).to(device)
     elif config_model_type == 'flex_attention':
         from custom_model import TransformerRegressor
 
@@ -105,35 +92,6 @@ def load_model(config, device):
 
     model.eval()
     return model 
-
-
-def test_one_event(model, data_folder):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    one_event_loader = get_test_dataloader(data_folder, batch_size=1)
-    for i,  (data_tensor, length_tensor) in enumerate(one_event_loader):
-        in_data_tensor_cpu = data_tensor[..., :3]
-        out_data_tensor_cpu =  torch.cat(( data_tensor[..., 9:11],data_tensor[..., 12:14]), dim=-1)
-        in_data_tensor = in_data_tensor_cpu.to(device)
-        out_data_tensor = out_data_tensor_cpu.to(device)
-        length_tensor = length_tensor.to(device)
-        
-
-        from custom_model import generate_padding_mask
-        flex_padding_mask = generate_padding_mask(length_tensor)
-
-        with torch.amp.autocast('cuda'):
-            pred = model(in_data_tensor, f'test_one_{i}', flex_padding_mask) 
-
-        pred_list = [pred[i, :length_tensor[i], :] for i in range(len(length_tensor))]
-        out_data_tensor = [out_data_tensor[i, :length_tensor[i], :] for i in range(len(length_tensor))]
-        cluster_labels_list = clustering(pred_list, 5, 3)
-        for cluster_labels, track_labels in zip(cluster_labels_list, out_data_tensor):
-            event_score, scores, nr_particles, predicted_tracks, true_tracks = calc_score_trackml(cluster_labels, track_labels, pt_threshold=0.9)
-            logging.info(f"TrackML score: {event_score}")
-            logging.info(f"Eff Scores: {scores}")
-        
-        break
-
 
 def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, config, wandb_logger=None, timer=None):
     '''
