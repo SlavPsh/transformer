@@ -7,7 +7,7 @@ import numpy as np
 
 # Import supporting tools
 import wandb
-from utils.io_utils import load_config, setup_logging, unique_output_dir, copy_config_to_output, get_file_path
+from utils.io_utils import load_config, setup_logging, unique_output_dir, copy_config_to_output, get_file_path, get_model_grad_average
 from utils.wandb_utils import WandbLogger, get_system_memory_stats
 from utils.timing_utils import StepTimer
 import argparse
@@ -19,7 +19,7 @@ from data_processing.tensor_dataloader import get_train_valid_dataloaders
 from custom_model import generate_cluster_padding_mask, generate_padding_mask, generate_sliding_window_padding_mask
 
 import torch.profiler
-from evaluation.scoring import calc_score_trackml
+from evaluation.scoring import calc_score_trackml, append_predictions_to_csv
 from evaluation.clustering import clustering
 
 
@@ -181,7 +181,7 @@ def setup_training(config, device):
     
     return model, optimizer, lr_scheduler, loss_fn, start_epoch
 
-def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None, timer=None):
+def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logger, epoch = 0, scaler=None, timer=None):
     '''
     Conducts a single epoch of training: prediction, loss calculation, and loss
     backpropagation. Returns the average loss over the whole train data.
@@ -225,12 +225,12 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
         ) as p:
         """
 
-        for i, (data_tensor, length_tensor) in enumerate(train_loader):    
+        for i, (data_tensor, length_tensor) in enumerate(train_loader):   
+
+            step_number = i + epoch * len(train_loader) 
 
             if i % 100 == 0:
                 logging.info(f"Starting batch {i}")
-                memory_stats = get_system_memory_stats()
-                logging.info(f"Memory stats start of epoch: {memory_stats}")
 
                 if timer:
                     stats = timer.get_stats(reset=False)
@@ -255,9 +255,6 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
             
             #phi_tensor = phi_tensor_cpu.to(device)
             #eta_coord_tensor = eta_coord_tensor_cpu.to(device)
-            if i % 100 == 0:
-                memory_stats = get_system_memory_stats()
-                logging.info(f"Memory stats tensors are on GPU : {memory_stats}")
 
 
             # Shall we remove import and padding mask generation from here?
@@ -321,10 +318,6 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
             if timer:
                 timer.stop()
 
-            if i % 100 == 0:
-                memory_stats = get_system_memory_stats()
-                logging.info(f"Memory stats after backprop: {memory_stats}")
-
             # Check for non-finite gradients
             
             for name, param in model.named_parameters():
@@ -333,6 +326,8 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
                         logging.info(f"[Non-finite Gradient] {name}  !!!")
                         #raise RuntimeError("NaN/Inf gradient detected!")
                     
+            avg_grad = get_model_grad_average(model)
+            wandb_logger.log({"train/average_grad": avg_grad}, step=step_number)
             # Add gradient clipping 
             #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             
@@ -389,7 +384,7 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, scaler=None
 
     return total_loss_sum / total_count_sum
 
-def evaluate(model, validation_loader, loss_fn, device, config):
+def evaluate(model, validation_loader, loss_fn, device, config, epoch=None):
     '''
     Evaluates the network on the validation data by making a prediction and
     calculating the loss. Returns the average loss over the whole val data.
@@ -397,21 +392,31 @@ def evaluate(model, validation_loader, loss_fn, device, config):
     config_model_type = config['model']['type']
     input_size = config['model']['input_size']
     output_size = config['model']['output_size']
+    in_out_size = input_size + output_size
     # Get the network in evaluation mode
     model.eval()
     total_loss_sum = 0.
     total_count_sum = 0
+    mean_dm_score = 0
+    mean_track_ml_score = 0
+
+    # If it's the final epoch, define a path for CSV
+    final_epoch_csv_path = None
+    if epoch is not None:
+        if epoch == (config['training']['total_epochs'] - 1):
+            final_epoch_csv_path = os.path.join(config['output_dir'], "final_epoch_preds.csv")
+
+            if os.path.exists(final_epoch_csv_path):
+                os.remove(final_epoch_csv_path)
 
     with torch.no_grad():
         if config_model_type == 'flex_attention':
             for i,  (data_tensor, length_tensor) in enumerate(validation_loader):    
                 length_tensor = length_tensor.squeeze(0)
 
-                in_data_tensor_cpu   = data_tensor[..., :input_size]     
-                out_data_tensor_cpu  = data_tensor[..., input_size:input_size + output_size] 
-                #mask = torch.arange(in_data_tensor_cpu.size(1)).expand(1, in_data_tensor_cpu.size(1)) < length_tensor
-                #in_data_tensor_cpu = in_data_tensor_cpu[mask].view(-1, in_data_tensor_cpu.size(2))
-                #out_data_tensor_cpu = out_data_tensor_cpu[mask].view(-1, out_data_tensor_cpu.size(2))   
+                in_data_tensor_cpu   = data_tensor[..., : input_size]     
+                out_data_tensor_cpu  = data_tensor[..., input_size : in_out_size] 
+
                 cluster_tensor_cpu   = data_tensor[..., -1].squeeze(-1)
                 #phi_tensor_cpu       = data_tensor[..., 14].squeeze(-1)
 
@@ -420,12 +425,6 @@ def evaluate(model, validation_loader, loss_fn, device, config):
                 in_data_tensor = in_data_tensor_cpu.to(device)
                 out_data_tensor = out_data_tensor_cpu.to(device)
                 cluster_tensor = cluster_tensor_cpu.to(device)
-                #phi_coord_tensor = phi_tensor_cpu.to(device)
-                #eta_coord_tensor = eta_coord_tensor_cpu.squeeze(0).to(device)
-
-                # What to do with padded cluster tensor ?? 
-                
-                # Shall we remove import and padding mask generation from here?
                 
                 #flex_padding_mask = generate_padding_mask(length_tensor)
                 flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
@@ -438,14 +437,14 @@ def evaluate(model, validation_loader, loss_fn, device, config):
                     batched_pred = []
                     batched_target = []
 
-                    B = len(length_tensor)
+                    num_batches = len(length_tensor)
 
-                    for b_idx in range(B):
+                    for batch_idx in range(num_batches):
 
-                        seq_len = length_tensor[b_idx].item()
+                        seq_len = length_tensor[batch_idx].item()
                         # unpad just [0..seq_len) for pred
-                        this_pred = pred[b_idx, :seq_len, :]
-                        this_target = out_data_tensor[b_idx, :seq_len, :]
+                        this_pred = pred[batch_idx, :seq_len, :]
+                        this_target = out_data_tensor[batch_idx, :seq_len, :]
                         batched_pred.append(this_pred)
                         batched_target.append(this_target)
                     
@@ -456,18 +455,43 @@ def evaluate(model, validation_loader, loss_fn, device, config):
 
                 if i == 0:
                     scores_list = []
-                    cluster_labels_list = clustering(batched_pred, 4, 4)
-
-                    for cluster_labels, track_labels in zip(cluster_labels_list, batched_target):
+                    track_ml_scores_list = []
+                    min_cl_size = 5
+                    min_samples = 3
+                    cluster_labels_list = clustering(batched_pred, min_cl_size=min_cl_size, min_samples=min_samples)
+                    
+                    metrics_data_tensor_cpu  = torch.cat(( data_tensor[..., in_out_size: in_out_size + 2],data_tensor[..., in_out_size + 3 : in_out_size + 5]), dim=-1) 
+                    length_tensor_cpu = length_tensor.to('cpu')
+                    metrics_data_tensor_cpu = [metrics_data_tensor_cpu[i, :length_tensor_cpu[i], :] for i in range(len(length_tensor_cpu))]
+                    
+                    for cluster_labels, track_labels in zip(cluster_labels_list, metrics_data_tensor_cpu):
                         event_score, scores, nr_particles, predicted_tracks, true_tracks = calc_score_trackml(cluster_labels, track_labels, pt_threshold=0.9)
                         scores_list.append(scores[1])
+                        track_ml_scores_list.append(event_score)
+                    
+                    mean_dm_score = sum(scores_list) / len(scores_list)
+                    mean_track_ml_score = sum(track_ml_scores_list) / len(track_ml_scores_list)
 
-                    logging.info(f"Eval Batch {i} . Mean DM score {sum(scores_list) / len(scores_list)}")
+                    logging.info(f"Eval Batch {i} . Mean DM score {mean_dm_score} with min_cl_size {min_cl_size} and min_samples {min_samples}")
+                    logging.info(f"Eval Batch {i} . Mean trackML score {mean_track_ml_score}")
 
                     
                 # for validation and logging
                 total_loss_sum += loss.item()
                 total_count_sum += 1
+
+                # If final epoch, append to CSV
+                if final_epoch_csv_path is not None:
+                    param_names = ["cos_theta", "sin_phi", "cos_phi", "q", "log_p", 'vz', "pt", "eta"]
+                    param_names = param_names[:output_size]
+                    append_predictions_to_csv(
+                        preds=pred,
+                        targets=out_data_tensor,
+                        batch_idx=i, 
+                        csv_path=final_epoch_csv_path,
+                        param_names=param_names
+                    )
+
                 
         else:
             for i, data in enumerate(validation_loader):
@@ -484,7 +508,7 @@ def evaluate(model, validation_loader, loss_fn, device, config):
                 total_loss_sum += loss.item()
                 total_count_sum += 1
    
-    return total_loss_sum / total_count_sum
+    return total_loss_sum / total_count_sum, mean_dm_score, mean_track_ml_score
 
 def main(config_path):
     #Create unique run name
@@ -525,6 +549,8 @@ def main(config_path):
     scaler = None
     train_loader = None
     valid_loader = None
+
+
 
     if config_model_type == 'flex_attention':
         logging.info(f"FlashAttention available: {torch.backends.cuda.flash_sdp_enabled()}")
@@ -571,28 +597,37 @@ def main(config_path):
     min_val_loss = np.inf
     count = 0
 
+    # To check for spikes in validation loss
+    # If the validation loss spikes >= 100% from best
+    min_epoch_for_spike_check = 5
+    spike_factor = 2
+    
+    spike_count = 0
+
     for epoch in range(start_epoch, config['training']['total_epochs']):
         # Train the model
-        train_loss = train_epoch(model, optimizer, train_loader, loss_fn, device, config, scaler, timer)
+        train_loss = train_epoch(model, optimizer, train_loader, loss_fn, device, config, wandb_logger, epoch, scaler, timer)
 
         # Evaluate using validation split
-        val_loss = evaluate(model, valid_loader, loss_fn, device, config)
+        val_loss, mean_dm_score, mean_track_ml_score = evaluate(model, valid_loader, loss_fn, device, config)
         
         # adjust learning rate based on validation loss
         lr_scheduler.step(val_loss)
         if config['training']['scheduler']['verbose']:
             current_lr = optimizer.param_groups[0]['lr'] # get last lr
             logging.info(f"lr: {current_lr}")
-            wandb_logger.log({"train/learning rate": current_lr})
+            wandb_logger.log({"train/learning rate": current_lr}, step = (epoch + 1) *  len(train_loader) )
 
         # Print info to the cluster logging
         logging.info(f"Epoch: {epoch}\nVal loss: {val_loss:.10f}, Train loss: {train_loss:.10f}")
         train_losses.append(train_loss)
         val_losses.append(val_loss)
 
-        epoch_stats = timer.get_stats(reset=True) 
+        time_epoch_stats = timer.get_stats(reset=True) 
         wandb_logger.log({'train/train_loss' : train_loss, 'train/epoch' : epoch,
-                        'train/validation loss' : val_loss, **epoch_stats})
+                        'train/validation loss' : val_loss, 'train/mean_dm_score' : mean_dm_score, 
+                        'train/mean_track_ml_score' : mean_track_ml_score,
+                        **time_epoch_stats}, step = (epoch + 1) * len(train_loader))
 
         if val_loss < min_val_loss:
             # If the model has a new best validation loss, save it as "the best"
@@ -605,6 +640,32 @@ def main(config_path):
             wandb_logger.save_model(model, f'model_last.pth', optimizer, lr_scheduler, epoch, output_dir)
             logging.info(f"Checkpoint saved to output_dir. Last of run. Epoch: {epoch}")
             count += 1
+
+        
+        #  If the model's val loss spikes >= 100% from best
+        #    and we are past some min_epoch_for_spike_check
+        if (spike_count >= min_epoch_for_spike_check) and (val_loss >= spike_factor * min_val_loss):
+            logging.info(f"Val loss spiked: {val_loss:.4f} >= {spike_factor} * {min_val_loss:.4f}.")
+            logging.info("Reloading 'model_best.pth' and lowering LR.")
+            # Reload from best
+            best_ckpt_path = os.path.join(output_dir, "model_best.pth")
+            if os.path.exists(best_ckpt_path):
+                ckpt = torch.load(best_ckpt_path)
+                model.load_state_dict(ckpt['model_state_dict'])
+                optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+                lr_scheduler.load_state_dict(ckpt['scheduler_state'])
+                # reduce LR manually
+                for param_group in optimizer.param_groups:
+                    # half the LR
+                    param_group['lr'] = param_group['lr'] * 0.5
+                logging.info(f"LR manually halved after spike. New LR: {optimizer.param_groups[0]['lr']}")
+                spike_count = 0
+            else:
+                logging.warning("No model_best.pth found to reload from!")
+                spike_count += 1
+        else:
+            # increment the spike count
+            spike_count += 1
 
         if count >= early_stopping_epoch:
             logging.info("Early stopping triggered")

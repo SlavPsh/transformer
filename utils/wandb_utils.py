@@ -68,10 +68,10 @@ class WandbLogger:
     def get_config(self):
         return wandb.config
     
-    def log(self, data):
+    def log(self, data, step=None):
         if not self.initialized:
             self.initialize()
-        wandb.log(data)
+        wandb.log(data, step=step)
     
     def alert(self, ttl, txt):
         if not self.initialized:

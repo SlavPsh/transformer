@@ -291,7 +291,7 @@ def calc_score_trackml(pred_lbl, true_lbl, pt_threshold=0.9):
     true_tracks : pd.DataFrame
         Aggregated truth table (grouped by particle_id with columns [pt, eta, weight]).
     """
-    # Build data rows from `true_lbl` => each element ~ [pt, eta, pid, weight]
+    # Build data rows from `true_lbl` => each element ~ [pt, eta, particle_id, weight]
     truth_rows = []
     for ind, part in enumerate(true_lbl):
         # part => [pt, eta, particle_id, weight]
@@ -388,3 +388,45 @@ def calc_edge_efficiency(pred_lbl, true_lbl):
     edge_efficiency = overlap_edges / true_edge_count if true_edge_count > 0 else 0
 
     return edge_efficiency
+
+
+import os
+
+def append_predictions_to_csv(preds, targets, batch_idx, csv_path, param_names=None):
+    """
+    Appends model predictions and corresponding targets to a CSV file.
+    Each row corresponds to one 'hit' or sample in the batch.
+
+    Args:
+        preds       : Tensor of shape (N, out_dim)
+        targets     : Tensor of shape (N, out_dim)
+        batch_idx   : The current batch index (integer)
+        csv_path    : Path to the CSV file to append
+        param_names : Optional list of parameter names for each dimension
+                      (like ['dx','dy','dz','dphi',...]) 
+    """
+    # Convert to CPU numpy for DataFrame creation
+    preds_np = preds.detach().cpu().numpy()
+    targets_np = targets.detach().cpu().numpy()
+
+    N, out_dim = preds_np.shape
+
+    # If param_names not specified, auto-generate
+    if (not param_names) or (len(param_names) < out_dim):
+        param_names = [f"param_{i}" for i in range(out_dim)]
+
+    # Build a dictionary for the DataFrame
+    # Each dimension => "pred_{name}" and "true_{name}"
+    data_dict = {
+        "batch_idx": [batch_idx]*N  # repeated for each row in this batch
+    }
+
+    for i, pname in enumerate(param_names):
+        data_dict[f"pred_{pname}"] = preds_np[:, i]
+        data_dict[f"true_{pname}"] = targets_np[:, i]
+
+    df_batch = pd.DataFrame(data_dict)
+
+    # Append to CSV (no header if file exists)
+    file_exists = os.path.isfile(csv_path)
+    df_batch.to_csv(csv_path, mode='a', header=not file_exists, index=False)
