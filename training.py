@@ -651,13 +651,18 @@ def main(config_path):
             best_ckpt_path = os.path.join(output_dir, "model_best.pth")
             if os.path.exists(best_ckpt_path):
                 ckpt = torch.load(best_ckpt_path)
+                #Get the current LR from  optimizer param groups
+                current_lrs = [pg["lr"] for pg in optimizer.param_groups]
+
                 model.load_state_dict(ckpt['model_state_dict'])
                 optimizer.load_state_dict(ckpt['optimizer_state_dict'])
                 lr_scheduler.load_state_dict(ckpt['scheduler_state'])
+                
                 # reduce LR manually
-                for param_group in optimizer.param_groups:
-                    # half the LR
-                    param_group['lr'] = param_group['lr'] * 0.5
+                #  Overwrite the LR in each param group using the *old* LR, scaled by 0.5
+                for group_idx, param_group in enumerate(optimizer.param_groups):
+                    param_group["lr"] = current_lrs[group_idx] * 0.5
+
                 logging.info(f"LR manually halved after spike. New LR: {optimizer.param_groups[0]['lr']}")
                 spike_count = 0
             else:
