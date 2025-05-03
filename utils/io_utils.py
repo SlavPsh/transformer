@@ -5,28 +5,17 @@ import logging
 from datetime import datetime
 
 
-def get_model_grad_average(model):
-    """
-    Prints the average absolute gradient magnitude across all parameters of 'model'.
-    Call this after  'loss.backward()' (and before 'optimizer.step()').
-    """
-    total_grad_sum = 0.0
-    total_num_params = 0
-
+def get_total_grad_norm(model, norm_type=2):
+    total = None
     for p in model.parameters():
         if p.grad is not None:
-            # sum of absolute values of gradients
-            grad_sum = p.grad.abs().sum().item()
-            total_grad_sum += grad_sum
-            # number of elements in this parameter's gradient
-            total_num_params += p.grad.numel()
-
-    if total_num_params > 0:
-        avg_grad = total_grad_sum / total_num_params
-        return avg_grad
-    else:
-        return 0.0
-
+            # use float() if gradients might be half-precision
+            grad = p.grad.float()
+            if total is None:
+                total = grad.pow(norm_type).sum()
+            else:
+                total += grad.pow(norm_type).sum()
+    return (total ** (1.0 / norm_type)).item() if total is not None else 0.0
 def load_config(config_path):
     """
     Load the TOML configuration file and return a dictionary.

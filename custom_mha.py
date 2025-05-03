@@ -26,14 +26,28 @@ from torch.overrides import (
     has_torch_function,
 )
 
+
+# For better performance, you can use:
+# flex_attention = torch.compile(flex_attention, dynamic=False, mode="max-autotune-no-cudagraphs")
+
+def compile_flex_attention():
+    try:
+        return torch.compile(flex_attention)
+    except:
+        return torch.compile(flex_attention, dynamic=False, mode="max-autotune")
+
+#compiled_flex_attention = torch.compile(flex_attention, dynamic=False, mode="max-autotune")
+
+"""
 _flex_attention_compiled = None
 
 def get_compiled_flex_attention():
     global _flex_attention_compiled
     if _flex_attention_compiled is None:
         print("Compiling flex_attention once...", flush=True)
-        _flex_attention_compiled = torch.compile(flex_attention, dynamic=False)
+        _flex_attention_compiled = torch.compile(flex_attention, dynamic=True, mode='max-autotune')
     return _flex_attention_compiled
+"""
 
 
 class CustomMultiHeadAttention(MultiheadAttention):
@@ -791,7 +805,7 @@ def multi_head_attention_forward(
         )
         
         """
-        compiled_flex_attention = get_compiled_flex_attention()
+        compiled_flex_attention = compile_flex_attention()
         attn_output = compiled_flex_attention(
             q, k, v, block_mask=block_mask
         )

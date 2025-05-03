@@ -131,7 +131,7 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
 
             flex_padding_mask = generate_padding_mask(length_tensor)
                 
-            with torch.amp.autocast('cuda'):
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 pred = model(in_data_tensor, f'test_{i}', flex_padding_mask, timer)
 
             if timer:

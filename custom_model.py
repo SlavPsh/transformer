@@ -368,6 +368,8 @@ class CustomTransformerEncoder(nn.TransformerEncoder):
 
         return output
 
+fast_create_block_mask = torch.compile(create_block_mask)
+
 class TransformerRegressor(nn.Module):
     '''
     A transformer network for clustering hits that belong to the same trajectory.
@@ -391,7 +393,7 @@ class TransformerRegressor(nn.Module):
             return self.mask_cache_cpu[key].to(device='cuda')
 
         # otherwise, build on GPU once
-        mask_gpu = create_block_mask(score_mod, B, None, S, S, device='cuda', _compile=True)
+        mask_gpu = fast_create_block_mask(score_mod, B, None, S, S, device='cuda')
 
         # then store a CPU copy for future re-use
         mask_cpu = mask_gpu.to(device='cpu')

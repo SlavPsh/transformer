@@ -3,11 +3,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import OneCycleLR
 import numpy as np
 
 # Import supporting tools
 import wandb
-from utils.io_utils import load_config, setup_logging, unique_output_dir, copy_config_to_output, get_file_path, get_model_grad_average
+from utils.io_utils import load_config, setup_logging, unique_output_dir, copy_config_to_output, get_file_path, get_total_grad_norm
 from utils.wandb_utils import WandbLogger, get_system_memory_stats
 from utils.timing_utils import StepTimer
 import argparse
@@ -118,8 +119,7 @@ def setup_training(config, device):
     elif config_model_type == 'flex_attention':
         from custom_model import TransformerRegressor
         
-        # For better performance, you can use:
-        # flex_attention = torch.compile(_flex_attention, dynamic=False, mode="max-autotune-no-cudagraphs")
+
 
         model = TransformerRegressor(
             num_encoder_layers = num_encoder_layers,
@@ -135,8 +135,6 @@ def setup_training(config, device):
     initial_lr =  wandb.config.initial_lr if hasattr(wandb.config, 'initial_lr') else config['training']['scheduler']['initial_lr']
     min_lr =  wandb.config.min_lr if hasattr(wandb.config, 'min_lr') else config['training']['scheduler']['min_lr']
     
-
-    # Another option is to use Adam optimizer
     #optimizer = torch.optim.Adam(model.parameters(), lr=initial_lr)
     optimizer = torch.optim.AdamW(model.parameters(), lr=initial_lr)
 
@@ -146,6 +144,16 @@ def setup_training(config, device):
     patience = config['training']['scheduler']['patience']
     
     lr_scheduler = ReduceLROnPlateau(optimizer, mode=mode, factor=factor, patience=patience, min_lr=min_lr)
+
+    """
+    lr_scheduler = OneCycleLR(
+    optimizer,
+    max_lr=0.01,
+    total_steps=total_updates,
+    pct_start=0.3,
+    anneal_strategy='cos'
+    )
+    """
 
     # criterion/loss function
     loss_fn = nn.MSELoss()
@@ -198,8 +206,8 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
 
 
     if config_model_type == 'flex_attention':
-        accumulation_steps = 2
-        optim.zero_grad()
+        accumulation_steps = 1
+        #optim.zero_grad()
 
         """
         # MEMORY PROFILING
@@ -225,7 +233,8 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
         ) as p:
         """
 
-        for i, (data_tensor, length_tensor) in enumerate(train_loader):   
+        for i, (data_tensor, length_tensor) in enumerate(train_loader):  
+            optim.zero_grad() 
 
             step_number = i + epoch * len(train_loader) 
 
@@ -241,10 +250,7 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
 
             in_data_tensor_cpu = data_tensor[..., :input_size]
             out_data_tensor_cpu = data_tensor[..., input_size:input_size + output_size]
-            # Unpad the data tensor
-            #mask = torch.arange(in_data_tensor_cpu.size(1)).expand(1, in_data_tensor_cpu.size(1)) < length_tensor
-            #in_data_tensor_cpu = in_data_tensor_cpu[mask].view(-1, in_data_tensor_cpu.size(2))
-            #out_data_tensor_cpu = out_data_tensor_cpu[mask].view(-1, out_data_tensor_cpu.size(2))
+
             cluster_tensor_cpu = data_tensor[..., -1].squeeze(-1)
             #phi_tensor_cpu = data_tensor[..., 14].squeeze(-1)
 
@@ -256,15 +262,12 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
             #phi_tensor = phi_tensor_cpu.to(device)
             #eta_coord_tensor = eta_coord_tensor_cpu.to(device)
 
-
-            # Shall we remove import and padding mask generation from here?
-
             #flex_padding_mask = generate_padding_mask(length_tensor)
             flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
             #flex_padding_mask = generate_sliding_window_padding_mask(length_tensor)
             
                 
-            with torch.amp.autocast('cuda'):  
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):  
                 
                 pred = model(in_data_tensor, f'train_{i}', flex_padding_mask, timer)
                 if i % 100 == 0:
@@ -313,7 +316,9 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
             loss = loss / accumulation_steps  
             if timer:
                 timer.start('backprop')
-            scaler.scale(loss).backward()
+
+            #scaler.scale(loss).backward()
+            loss.backward()
 
             if timer:
                 timer.stop()
@@ -323,22 +328,25 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
             for name, param in model.named_parameters():
                 if param.grad is not None:
                     if not torch.isfinite(param.grad).all():
-                        logging.info(f"[Non-finite Gradient] {name}  !!!")
+                        logging.warning(f"[Non-finite Gradient] {name}  !!!")
                         #raise RuntimeError("NaN/Inf gradient detected!")
                     
-            avg_grad = get_model_grad_average(model)
-            wandb_logger.log({"train/average_grad": avg_grad}, step=step_number)
+            grad_norm = get_total_grad_norm(model)
+            wandb_logger.log({"train/grad_norm": grad_norm}, step=step_number)
             # Add gradient clipping 
-            #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=150.0)
             
             if (i + 1) % accumulation_steps == 0:
                 if timer:
                     timer.start('optimizer_step')
-                scaler.step(optim)
+                #scaler.step(optim)
+                optim.step()
                 if timer:
                     timer.stop()
-                scaler.update()
-                optim.zero_grad()
+                
+
+                #scaler.update()
+                #optim.zero_grad()
 
             # for logging
             total_loss_sum += loss.item()*accumulation_steps
@@ -352,11 +360,13 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
                     break
             """
         
+        """
         remainder = len(train_loader) % accumulation_steps
         if remainder != 0:
             scaler.step(optim)
             scaler.update()
             optim.zero_grad()
+        """
             
         # Other model types        
     else:
@@ -384,7 +394,7 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
 
     return total_loss_sum / total_count_sum
 
-def evaluate(model, validation_loader, loss_fn, device, config, epoch=None):
+def evaluate(model, validation_loader, loss_fn, device, config, final_epoch_csv_path=None):
     '''
     Evaluates the network on the validation data by making a prediction and
     calculating the loss. Returns the average loss over the whole val data.
@@ -399,15 +409,6 @@ def evaluate(model, validation_loader, loss_fn, device, config, epoch=None):
     total_count_sum = 0
     mean_dm_score = 0
     mean_track_ml_score = 0
-
-    # If it's the final epoch, define a path for CSV
-    final_epoch_csv_path = None
-    if epoch is not None:
-        if epoch == (config['training']['total_epochs'] - 1):
-            final_epoch_csv_path = os.path.join(config['output_dir'], "final_epoch_preds.csv")
-
-            if os.path.exists(final_epoch_csv_path):
-                os.remove(final_epoch_csv_path)
 
     with torch.no_grad():
         if config_model_type == 'flex_attention':
@@ -431,7 +432,7 @@ def evaluate(model, validation_loader, loss_fn, device, config, epoch=None):
                 #flex_padding_mask = generate_sliding_window_padding_mask(length_tensor)
 
                 
-                with torch.amp.autocast('cuda'):
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                     pred = model(in_data_tensor, f'valid_{i}', flex_padding_mask)
                     
                     batched_pred = []
@@ -456,13 +457,21 @@ def evaluate(model, validation_loader, loss_fn, device, config, epoch=None):
                 if i == 0:
                     scores_list = []
                     track_ml_scores_list = []
-                    min_cl_size = 5
-                    min_samples = 3
+                    min_cl_size = 2
+                    min_samples = 1
+                    
+                    # Cluster predictions
                     cluster_labels_list = clustering(batched_pred, min_cl_size=min_cl_size, min_samples=min_samples)
+                    
+                    # Check the best posible score by passing true data : 
+                    #cluster_labels_list = clustering(batched_target, min_cl_size=min_cl_size, min_samples=min_samples)
                     
                     metrics_data_tensor_cpu  = torch.cat(( data_tensor[..., in_out_size: in_out_size + 2],data_tensor[..., in_out_size + 3 : in_out_size + 5]), dim=-1) 
                     length_tensor_cpu = length_tensor.to('cpu')
                     metrics_data_tensor_cpu = [metrics_data_tensor_cpu[i, :length_tensor_cpu[i], :] for i in range(len(length_tensor_cpu))]
+
+                    # Check the score if we use clusters from before transformer stage
+                    #cluster_labels_list = [cluster_tensor_cpu[i, :length_tensor_cpu[i]] for i in range(len(length_tensor_cpu))]
                     
                     for cluster_labels, track_labels in zip(cluster_labels_list, metrics_data_tensor_cpu):
                         event_score, scores, nr_particles, predicted_tracks, true_tracks = calc_score_trackml(cluster_labels, track_labels, pt_threshold=0.9)
@@ -554,7 +563,8 @@ def main(config_path):
 
     if config_model_type == 'flex_attention':
         logging.info(f"FlashAttention available: {torch.backends.cuda.flash_sdp_enabled()}")
-        scaler = torch.amp.GradScaler('cuda')
+        #scaler = torch.GradScaler("cuda")
+        scaler = None
 
         data_folder = config['data']['data_dir']
         logging.info(f'Loading data from {data_folder} ...')
@@ -676,7 +686,13 @@ def main(config_path):
             logging.info("Early stopping triggered")
             break
 
-    
+    # Add final evaluate for the stats
+    final_epoch_csv_path = os.path.join(output_dir, "final_epoch_preds.csv")
+    if os.path.exists(final_epoch_csv_path):
+        os.remove(final_epoch_csv_path)
+
+    _, _, _ = evaluate(model, valid_loader, loss_fn, device, config, final_epoch_csv_path=final_epoch_csv_path)
+
     logging.info("Finished training")
     wandb_logger.alert("Finished training", "Finished training")
 
