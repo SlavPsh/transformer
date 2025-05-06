@@ -262,8 +262,8 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
             #phi_tensor = phi_tensor_cpu.to(device)
             #eta_coord_tensor = eta_coord_tensor_cpu.to(device)
 
-            #flex_padding_mask = generate_padding_mask(length_tensor)
-            flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
+            flex_padding_mask = generate_padding_mask(length_tensor)
+            #flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
             #flex_padding_mask = generate_sliding_window_padding_mask(length_tensor)
             
                 
@@ -427,8 +427,8 @@ def evaluate(model, validation_loader, loss_fn, device, config, final_epoch_csv_
                 out_data_tensor = out_data_tensor_cpu.to(device)
                 cluster_tensor = cluster_tensor_cpu.to(device)
                 
-                #flex_padding_mask = generate_padding_mask(length_tensor)
-                flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
+                flex_padding_mask = generate_padding_mask(length_tensor)
+                #flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
                 #flex_padding_mask = generate_sliding_window_padding_mask(length_tensor)
 
                 

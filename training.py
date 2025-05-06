@@ -73,7 +73,7 @@ def combined_loss(pred, target):
     return mse_val+ bce_val
 
 
-def setup_training(config, device):
+def setup_training(config, device, train_loader):
     '''
     Sets up the model, optimizer, and loss function for training. Returns the model,
     optimizer, loss function, and the starting epoch.
@@ -101,6 +101,7 @@ def setup_training(config, device):
     logging.info(f"input_size: {config['model']['input_size']}")
     logging.info(f"output_size: {config['model']['output_size']}")
     logging.info(f"initial_lr: {config['training']['scheduler']['initial_lr']}")
+
 
     
     if config_model_type == 'vanilla':
@@ -131,29 +132,34 @@ def setup_training(config, device):
             dropout=config['model']['dropout']
         ).to(device)
 
-    # optimizer
-    initial_lr =  wandb.config.initial_lr if hasattr(wandb.config, 'initial_lr') else config['training']['scheduler']['initial_lr']
-    min_lr =  wandb.config.min_lr if hasattr(wandb.config, 'min_lr') else config['training']['scheduler']['min_lr']
-    
-    #optimizer = torch.optim.Adam(model.parameters(), lr=initial_lr)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=initial_lr)
-
-    # scheduler
+    # Parameters for LR scheduler
     mode = config['training']['scheduler']['mode']
     factor = config['training']['scheduler']['factor']
     patience = config['training']['scheduler']['patience']
+    initial_lr =  wandb.config.initial_lr if hasattr(wandb.config, 'initial_lr') else config['training']['scheduler']['initial_lr']
+    min_lr =  wandb.config.min_lr if hasattr(wandb.config, 'min_lr') else config['training']['scheduler']['min_lr']
     
-    lr_scheduler = ReduceLROnPlateau(optimizer, mode=mode, factor=factor, patience=patience, min_lr=min_lr)
+    # Parameters for OneCycleLR
+    max_lr =  config['training']['scheduler']['max_lr']
+    warmup_factor = config['training']['scheduler']['warmup_factor']
+    div_factor = max_lr / initial_lr
+    final_div_factor = initial_lr / min_lr
+    total_updates = config['training']['total_epochs'] * len(train_loader)
+    
+    #optimizer = torch.optim.Adam(model.parameters(), lr=initial_lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=initial_lr)
+    
+    #lr_scheduler = ReduceLROnPlateau(optimizer, mode=mode, factor=factor, patience=patience, min_lr=min_lr)
 
-    """
-    lr_scheduler = OneCycleLR(
-    optimizer,
-    max_lr=0.01,
+    
+    lr_scheduler = OneCycleLR(optimizer,
+    max_lr=max_lr,
     total_steps=total_updates,
-    pct_start=0.3,
-    anneal_strategy='cos'
-    )
-    """
+    pct_start=warmup_factor,
+    anneal_strategy='cos',
+    div_factor=div_factor,
+    final_div_factor=final_div_factor)
+    
 
     # criterion/loss function
     loss_fn = nn.MSELoss()
@@ -197,6 +203,7 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
     config_model_type = config['model']['type']
     input_size = config['model']['input_size']
     output_size = config['model']['output_size']
+    accumulation_steps = config['training']['accumulation_steps']
     
     # Get the network in train mode
     torch.set_grad_enabled(True)
@@ -206,8 +213,8 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
 
 
     if config_model_type == 'flex_attention':
-        accumulation_steps = 1
-        #optim.zero_grad()
+        
+        optim.zero_grad()
 
         """
         # MEMORY PROFILING
@@ -234,7 +241,7 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
         """
 
         for i, (data_tensor, length_tensor) in enumerate(train_loader):  
-            optim.zero_grad() 
+            #optim.zero_grad() 
 
             step_number = i + epoch * len(train_loader) 
 
@@ -317,8 +324,8 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
             if timer:
                 timer.start('backprop')
 
-            #scaler.scale(loss).backward()
-            loss.backward()
+            scaler.scale(loss).backward()
+            #loss.backward()
 
             if timer:
                 timer.stop()
@@ -330,23 +337,24 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
                     if not torch.isfinite(param.grad).all():
                         logging.warning(f"[Non-finite Gradient] {name}  !!!")
                         #raise RuntimeError("NaN/Inf gradient detected!")
-                    
+            
             grad_norm = get_total_grad_norm(model)
             wandb_logger.log({"train/grad_norm": grad_norm}, step=step_number)
-            # Add gradient clipping 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=150.0)
+            # Add gradient clipping , but before unscale gradients
+            scaler.unscale_(optim)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=100.0)
             
             if (i + 1) % accumulation_steps == 0:
                 if timer:
                     timer.start('optimizer_step')
-                #scaler.step(optim)
-                optim.step()
+                scaler.step(optim)
+                #optim.step()
                 if timer:
                     timer.stop()
                 
 
-                #scaler.update()
-                #optim.zero_grad()
+                scaler.update()
+                optim.zero_grad()
 
             # for logging
             total_loss_sum += loss.item()*accumulation_steps
@@ -360,13 +368,12 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
                     break
             """
         
-        """
+        
         remainder = len(train_loader) % accumulation_steps
         if remainder != 0:
             scaler.step(optim)
             scaler.update()
             optim.zero_grad()
-        """
             
         # Other model types        
     else:
@@ -563,8 +570,7 @@ def main(config_path):
 
     if config_model_type == 'flex_attention':
         logging.info(f"FlashAttention available: {torch.backends.cuda.flash_sdp_enabled()}")
-        #scaler = torch.GradScaler("cuda")
-        scaler = None
+        scaler = torch.GradScaler("cuda")
 
         data_folder = config['data']['data_dir']
         logging.info(f'Loading data from {data_folder} ...')
@@ -588,7 +594,7 @@ def main(config_path):
     logging.info(f'Data loaded.')
 
     # Set up the model, optimizer, and loss function
-    model, optimizer,lr_scheduler, loss_fn, start_epoch = setup_training(config, device)
+    model, optimizer,lr_scheduler, loss_fn, start_epoch = setup_training(config, device, train_loader)
     
     timer = StepTimer(device)
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

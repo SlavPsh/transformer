@@ -166,13 +166,18 @@ def efficiency_scores(tracks, n_particles, predicted_count_thld=3):
 
     n_clusters = len(tracks['track_id'])
 
+    # Calculate and return perfect match efficiency, LHC-style match efficiency, 
+    # and double majority match efficiency
+
     n_perfect_match = sum(tracks["perfect_match"])
     n_double_majority = sum(tracks["double_majority"])
     n_lhc_match = sum(tracks["lhc_match"])
 
-    # Calculate and return perfect match efficiency, LHC-style match efficiency, 
-    # and double majority match efficiency
-    return n_perfect_match/n_particles, n_double_majority/n_particles, n_lhc_match/n_clusters
+    perfect_ratio = n_perfect_match / n_particles if n_particles > 0 else 0
+    double_majority_ratio = n_double_majority / n_particles if n_particles > 0 else 0
+    lhc_ratio = n_lhc_match / n_clusters if n_clusters > 0 else 0
+
+    return perfect_ratio, double_majority_ratio, lhc_ratio
 
 
 def calc_score(pred_lbl, true_lbl):
