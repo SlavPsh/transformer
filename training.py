@@ -142,9 +142,11 @@ def setup_training(config, device, train_loader):
     # Parameters for OneCycleLR
     max_lr =  config['training']['scheduler']['max_lr']
     warmup_factor = config['training']['scheduler']['warmup_factor']
+    accumulation_steps = config['training']['accumulation_steps']
     div_factor = max_lr / initial_lr
     final_div_factor = initial_lr / min_lr
-    total_updates = config['training']['total_epochs'] * len(train_loader)
+    updates_per_epoch = (len(train_loader) + accumulation_steps - 1) // accumulation_steps
+    total_updates = updates_per_epoch * config['training']['total_epochs']
     
     #optimizer = torch.optim.Adam(model.parameters(), lr=initial_lr)
     optimizer = torch.optim.AdamW(model.parameters(), lr=initial_lr)
@@ -153,12 +155,12 @@ def setup_training(config, device, train_loader):
 
     
     lr_scheduler = OneCycleLR(optimizer,
-    max_lr=max_lr,
-    total_steps=total_updates,
-    pct_start=warmup_factor,
-    anneal_strategy='cos',
-    div_factor=div_factor,
-    final_div_factor=final_div_factor)
+                    max_lr=max_lr,
+                    total_steps=total_updates,
+                    pct_start=warmup_factor,
+                    anneal_strategy='cos',
+                    div_factor=div_factor,
+                    final_div_factor=final_div_factor)
     
 
     # criterion/loss function
@@ -195,7 +197,7 @@ def setup_training(config, device, train_loader):
     
     return model, optimizer, lr_scheduler, loss_fn, start_epoch
 
-def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logger, epoch = 0, scaler=None, timer=None):
+def train_epoch(model, optim, train_loader, loss_fn, scaler, lr_scheduler, device, config, wandb_logger, epoch = 0, timer=None):
     '''
     Conducts a single epoch of training: prediction, loss calculation, and loss
     backpropagation. Returns the average loss over the whole train data.
@@ -243,6 +245,7 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
         for i, (data_tensor, length_tensor) in enumerate(train_loader):  
             #optim.zero_grad() 
 
+            # For logging
             step_number = i + epoch * len(train_loader) 
 
             if i % 100 == 0:
@@ -251,8 +254,8 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
                 if timer:
                     stats = timer.get_stats(reset=False)
                     logging.info(f"Accum Timer stats: {stats}")
+            
             # Slice the data tensor
-
             length_tensor = length_tensor.squeeze(0)
 
             in_data_tensor_cpu = data_tensor[..., :input_size]
@@ -355,6 +358,7 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
 
                 scaler.update()
                 optim.zero_grad()
+                lr_scheduler.step()
 
             # for logging
             total_loss_sum += loss.item()*accumulation_steps
@@ -374,6 +378,7 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
             scaler.step(optim)
             scaler.update()
             optim.zero_grad()
+            lr_scheduler.step()
             
         # Other model types        
     else:
@@ -622,13 +627,13 @@ def main(config_path):
 
     for epoch in range(start_epoch, config['training']['total_epochs']):
         # Train the model
-        train_loss = train_epoch(model, optimizer, train_loader, loss_fn, device, config, wandb_logger, epoch, scaler, timer)
+        train_loss = train_epoch(model, optimizer, train_loader, loss_fn, scaler, lr_scheduler, device, config, wandb_logger, epoch, scaler, timer)
 
         # Evaluate using validation split
         val_loss, mean_dm_score, mean_track_ml_score = evaluate(model, valid_loader, loss_fn, device, config)
         
         # adjust learning rate based on validation loss
-        lr_scheduler.step(val_loss)
+        #lr_scheduler.step(val_loss)
         if config['training']['scheduler']['verbose']:
             current_lr = optimizer.param_groups[0]['lr'] # get last lr
             logging.info(f"lr: {current_lr}")

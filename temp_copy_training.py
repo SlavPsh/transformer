@@ -73,7 +73,7 @@ def combined_loss(pred, target):
     return mse_val+ bce_val
 
 
-def setup_training(config, device):
+def setup_training(config, device, train_loader):
     '''
     Sets up the model, optimizer, and loss function for training. Returns the model,
     optimizer, loss function, and the starting epoch.
@@ -101,6 +101,7 @@ def setup_training(config, device):
     logging.info(f"input_size: {config['model']['input_size']}")
     logging.info(f"output_size: {config['model']['output_size']}")
     logging.info(f"initial_lr: {config['training']['scheduler']['initial_lr']}")
+
 
     
     if config_model_type == 'vanilla':
@@ -131,29 +132,36 @@ def setup_training(config, device):
             dropout=config['model']['dropout']
         ).to(device)
 
-    # optimizer
-    initial_lr =  wandb.config.initial_lr if hasattr(wandb.config, 'initial_lr') else config['training']['scheduler']['initial_lr']
-    min_lr =  wandb.config.min_lr if hasattr(wandb.config, 'min_lr') else config['training']['scheduler']['min_lr']
-    
-    #optimizer = torch.optim.Adam(model.parameters(), lr=initial_lr)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=initial_lr)
-
-    # scheduler
+    # Parameters for LR scheduler
     mode = config['training']['scheduler']['mode']
     factor = config['training']['scheduler']['factor']
     patience = config['training']['scheduler']['patience']
+    initial_lr =  wandb.config.initial_lr if hasattr(wandb.config, 'initial_lr') else config['training']['scheduler']['initial_lr']
+    min_lr =  wandb.config.min_lr if hasattr(wandb.config, 'min_lr') else config['training']['scheduler']['min_lr']
     
-    lr_scheduler = ReduceLROnPlateau(optimizer, mode=mode, factor=factor, patience=patience, min_lr=min_lr)
+    # Parameters for OneCycleLR
+    max_lr =  config['training']['scheduler']['max_lr']
+    warmup_factor = config['training']['scheduler']['warmup_factor']
+    accumulation_steps = config['training']['accumulation_steps']
+    div_factor = max_lr / initial_lr
+    final_div_factor = initial_lr / min_lr
+    updates_per_epoch = (len(train_loader) + accumulation_steps - 1) // accumulation_steps
+    total_updates = updates_per_epoch * config['training']['total_epochs']
+    
+    #optimizer = torch.optim.Adam(model.parameters(), lr=initial_lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=initial_lr)
+    
+    #lr_scheduler = ReduceLROnPlateau(optimizer, mode=mode, factor=factor, patience=patience, min_lr=min_lr)
 
-    """
-    lr_scheduler = OneCycleLR(
-    optimizer,
-    max_lr=0.01,
-    total_steps=total_updates,
-    pct_start=0.3,
-    anneal_strategy='cos'
-    )
-    """
+    
+    lr_scheduler = OneCycleLR(optimizer,
+                    max_lr=max_lr,
+                    total_steps=total_updates,
+                    pct_start=warmup_factor,
+                    anneal_strategy='cos',
+                    div_factor=div_factor,
+                    final_div_factor=final_div_factor)
+    
 
     # criterion/loss function
     loss_fn = nn.MSELoss()
@@ -189,7 +197,7 @@ def setup_training(config, device):
     
     return model, optimizer, lr_scheduler, loss_fn, start_epoch
 
-def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logger, epoch = 0, scaler=None, timer=None):
+def train_epoch(model, optim, train_loader, loss_fn, scaler, lr_scheduler, device, config, wandb_logger, epoch = 0, timer=None):
     '''
     Conducts a single epoch of training: prediction, loss calculation, and loss
     backpropagation. Returns the average loss over the whole train data.
@@ -197,6 +205,7 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
     config_model_type = config['model']['type']
     input_size = config['model']['input_size']
     output_size = config['model']['output_size']
+    accumulation_steps = config['training']['accumulation_steps']
     
     # Get the network in train mode
     torch.set_grad_enabled(True)
@@ -206,8 +215,8 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
 
 
     if config_model_type == 'flex_attention':
-        accumulation_steps = 1
-        #optim.zero_grad()
+        
+        optim.zero_grad()
 
         """
         # MEMORY PROFILING
@@ -234,8 +243,9 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
         """
 
         for i, (data_tensor, length_tensor) in enumerate(train_loader):  
-            optim.zero_grad() 
+            #optim.zero_grad() 
 
+            # For logging
             step_number = i + epoch * len(train_loader) 
 
             if i % 100 == 0:
@@ -244,8 +254,8 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
                 if timer:
                     stats = timer.get_stats(reset=False)
                     logging.info(f"Accum Timer stats: {stats}")
+            
             # Slice the data tensor
-
             length_tensor = length_tensor.squeeze(0)
 
             in_data_tensor_cpu = data_tensor[..., :input_size]
@@ -262,8 +272,8 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
             #phi_tensor = phi_tensor_cpu.to(device)
             #eta_coord_tensor = eta_coord_tensor_cpu.to(device)
 
-            flex_padding_mask = generate_padding_mask(length_tensor)
-            #flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
+            #flex_padding_mask = generate_padding_mask(length_tensor)
+            flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
             #flex_padding_mask = generate_sliding_window_padding_mask(length_tensor)
             
                 
@@ -317,8 +327,8 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
             if timer:
                 timer.start('backprop')
 
-            #scaler.scale(loss).backward()
-            loss.backward()
+            scaler.scale(loss).backward()
+            #loss.backward()
 
             if timer:
                 timer.stop()
@@ -330,23 +340,25 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
                     if not torch.isfinite(param.grad).all():
                         logging.warning(f"[Non-finite Gradient] {name}  !!!")
                         #raise RuntimeError("NaN/Inf gradient detected!")
-                    
+            
             grad_norm = get_total_grad_norm(model)
             wandb_logger.log({"train/grad_norm": grad_norm}, step=step_number)
-            # Add gradient clipping 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=150.0)
+            # Add gradient clipping , but before unscale gradients
+            scaler.unscale_(optim)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=100.0)
             
             if (i + 1) % accumulation_steps == 0:
                 if timer:
                     timer.start('optimizer_step')
-                #scaler.step(optim)
-                optim.step()
+                scaler.step(optim)
+                #optim.step()
                 if timer:
                     timer.stop()
                 
 
-                #scaler.update()
-                #optim.zero_grad()
+                scaler.update()
+                optim.zero_grad()
+                lr_scheduler.step()
 
             # for logging
             total_loss_sum += loss.item()*accumulation_steps
@@ -360,13 +372,13 @@ def train_epoch(model, optim, train_loader, loss_fn, device, config, wandb_logge
                     break
             """
         
-        """
+        
         remainder = len(train_loader) % accumulation_steps
         if remainder != 0:
             scaler.step(optim)
             scaler.update()
             optim.zero_grad()
-        """
+            lr_scheduler.step()
             
         # Other model types        
     else:
@@ -427,8 +439,8 @@ def evaluate(model, validation_loader, loss_fn, device, config, final_epoch_csv_
                 out_data_tensor = out_data_tensor_cpu.to(device)
                 cluster_tensor = cluster_tensor_cpu.to(device)
                 
-                flex_padding_mask = generate_padding_mask(length_tensor)
-                #flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
+                #flex_padding_mask = generate_padding_mask(length_tensor)
+                flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
                 #flex_padding_mask = generate_sliding_window_padding_mask(length_tensor)
 
                 
@@ -563,8 +575,7 @@ def main(config_path):
 
     if config_model_type == 'flex_attention':
         logging.info(f"FlashAttention available: {torch.backends.cuda.flash_sdp_enabled()}")
-        #scaler = torch.GradScaler("cuda")
-        scaler = None
+        scaler = torch.GradScaler("cuda")
 
         data_folder = config['data']['data_dir']
         logging.info(f'Loading data from {data_folder} ...')
@@ -588,7 +599,7 @@ def main(config_path):
     logging.info(f'Data loaded.')
 
     # Set up the model, optimizer, and loss function
-    model, optimizer,lr_scheduler, loss_fn, start_epoch = setup_training(config, device)
+    model, optimizer,lr_scheduler, loss_fn, start_epoch = setup_training(config, device, train_loader)
     
     timer = StepTimer(device)
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -616,13 +627,13 @@ def main(config_path):
 
     for epoch in range(start_epoch, config['training']['total_epochs']):
         # Train the model
-        train_loss = train_epoch(model, optimizer, train_loader, loss_fn, device, config, wandb_logger, epoch, scaler, timer)
+        train_loss = train_epoch(model, optimizer, train_loader, loss_fn, scaler, lr_scheduler, device, config, wandb_logger, epoch, scaler, timer)
 
         # Evaluate using validation split
         val_loss, mean_dm_score, mean_track_ml_score = evaluate(model, valid_loader, loss_fn, device, config)
         
         # adjust learning rate based on validation loss
-        lr_scheduler.step(val_loss)
+        #lr_scheduler.step(val_loss)
         if config['training']['scheduler']['verbose']:
             current_lr = optimizer.param_groups[0]['lr'] # get last lr
             logging.info(f"lr: {current_lr}")
@@ -651,7 +662,8 @@ def main(config_path):
             logging.info(f"Checkpoint saved to output_dir. Last of run. Epoch: {epoch}")
             count += 1
 
-        
+        """
+        ###  Check for spikes in validation loss ### 
         #  If the model's val loss spikes >= 100% from best
         #    and we are past some min_epoch_for_spike_check
         if (spike_count >= min_epoch_for_spike_check) and (val_loss >= spike_factor * min_val_loss):
@@ -681,6 +693,8 @@ def main(config_path):
         else:
             # increment the spike count
             spike_count += 1
+
+        """
 
         if count >= early_stopping_epoch:
             logging.info("Early stopping triggered")
