@@ -627,7 +627,7 @@ def main(config_path):
 
     for epoch in range(start_epoch, config['training']['total_epochs']):
         # Train the model
-        train_loss = train_epoch(model, optimizer, train_loader, loss_fn, scaler, lr_scheduler, device, config, wandb_logger, epoch, scaler, timer)
+        train_loss = train_epoch(model, optimizer, train_loader, loss_fn, scaler, lr_scheduler, device, config, wandb_logger, epoch, timer)
 
         # Evaluate using validation split
         val_loss, mean_dm_score, mean_track_ml_score = evaluate(model, valid_loader, loss_fn, device, config)
