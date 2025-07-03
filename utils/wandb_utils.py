@@ -50,6 +50,11 @@ class WandbLogger:
         self.initialized = False
         self.job_type = job_type
         self.sweep_id = None
+
+    def get_output_dir(self):
+        if self.output_dir is None:
+            raise ValueError("Output directory is not set.")
+        return self.output_dir
     
     def get_run_name(self):
         return self.run_name

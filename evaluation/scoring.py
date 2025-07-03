@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import torch
+import os
 
 
 # Following two functions are directly taken from the official TrackML github repository:
@@ -309,6 +310,8 @@ def calc_score_trackml(pred_lbl, true_lbl, pt_threshold=0.9):
     
     # Construct dataframes
     truth = pd.DataFrame(truth_rows, columns=['hit_id', 'pt', 'eta', 'particle_id', 'weight'])
+    truth['particle_id'] = truth['particle_id'].astype('int64')
+
     submission = pd.DataFrame(pred_rows, columns=['hit_id', 'track_id'])
     
     # Merge predicted cluster IDs with the truth info
@@ -395,43 +398,46 @@ def calc_edge_efficiency(pred_lbl, true_lbl):
     return edge_efficiency
 
 
-import os
 
-def append_predictions_to_csv(preds, targets, batch_idx, csv_path, param_names=None):
-    """
-    Appends model predictions and corresponding targets to a CSV file.
-    Each row corresponds to one 'hit' or sample in the batch.
+def append_predictions_to_csv(preds_list, targets_list, out_data_list, csv_path, param_names=None):
+    import torch
+    import pandas as pd
+    import os
 
-    Args:
-        preds       : Tensor of shape (N, out_dim)
-        targets     : Tensor of shape (N, out_dim)
-        batch_idx   : The current batch index (integer)
-        csv_path    : Path to the CSV file to append
-        param_names : Optional list of parameter names for each dimension
-                      (like ['dx','dy','dz','dphi',...]) 
-    """
-    # Convert to CPU numpy for DataFrame creation
-    preds_np = preds.detach().cpu().numpy()
-    targets_np = targets.detach().cpu().numpy()
+    # Concatenate once on GPU, then move to CPU
+    preds_tensor = torch.cat(preds_list, dim=0).float().detach().cpu()
+    targets_tensor = torch.cat(targets_list, dim=0).float().detach().cpu()
+    particle_id_tensor = torch.cat([out[:, 2] for out in out_data_list], dim=0).long().detach().cpu()
 
+    # batch_id creation with integer type
+    batch_ids = torch.cat([
+        torch.full((pred.shape[0],), idx, dtype=torch.long)
+        for idx, pred in enumerate(preds_list)
+    ]).cpu()
+
+    # Convert tensors to numpy arrays
+    preds_np = preds_tensor.numpy()
+    targets_np = targets_tensor.numpy()
+    particle_ids_np = particle_id_tensor.numpy()
+    batch_ids_np = batch_ids.numpy()
+
+    # Handle parameter names
     N, out_dim = preds_np.shape
-
-    # If param_names not specified, auto-generate
     if (not param_names) or (len(param_names) < out_dim):
         param_names = [f"param_{i}" for i in range(out_dim)]
 
-    # Build a dictionary for the DataFrame
-    # Each dimension => "pred_{name}" and "true_{name}"
+    # Build data dictionary
     data_dict = {
-        "batch_idx": [batch_idx]*N  # repeated for each row in this batch
+        "batch_id": batch_ids_np,
+        "particle_id": particle_ids_np,
     }
-
     for i, pname in enumerate(param_names):
         data_dict[f"pred_{pname}"] = preds_np[:, i]
         data_dict[f"true_{pname}"] = targets_np[:, i]
 
+    # Write to CSV efficiently
     df_batch = pd.DataFrame(data_dict)
 
-    # Append to CSV (no header if file exists)
     file_exists = os.path.isfile(csv_path)
     df_batch.to_csv(csv_path, mode='a', header=not file_exists, index=False)
+

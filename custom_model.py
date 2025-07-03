@@ -185,7 +185,7 @@ class CustomTransformerEncoderLayer(nn.TransformerEncoderLayer):
                     mask_type,
                 )
 
-        # see Fig. 1 of https://arxiv.org/pdf/2002.04745v1.pdf
+        
         x = src
         if self.norm_first:
             x = x + self._sa_block(

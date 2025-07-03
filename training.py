@@ -1,4 +1,5 @@
 from data_processing.dataset import load_trackml_data
+from functools import partial
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,57 +21,86 @@ from data_processing.tensor_dataloader import get_train_valid_dataloaders
 from custom_model import generate_cluster_padding_mask, generate_padding_mask, generate_sliding_window_padding_mask
 
 import torch.profiler
-from evaluation.scoring import calc_score_trackml, append_predictions_to_csv
-from evaluation.clustering import clustering
+from evaluation.scoring import calc_score_trackml
+from evaluation.clustering import clustering, clustering_inception
+
+def mse_per_feature_loss(pred, target, feature_names):
+    losses = {}
+    for i, feature in enumerate(feature_names):
+        loss_feature = F.mse_loss(pred[:, i], target[:, i])
+        losses[f'loss_{feature}'] = loss_feature
+    total_loss = torch.stack(list(losses.values())).mean()
+    return total_loss, losses
 
 
-
-def combined_loss(pred, target):
+def mse_per_feature_loss_weighted(
+        pred,            # (N, F)  float32/float16
+        target,          # (N, F)  same dtype; may contain NaNs
+        feature_names,   # list[str]  len == F
+        pt=None,         # (N,) optional, pt per hit
+        *,
+        pt_threshold=0.9,
+        pt_weighting='none',   # 'none' | 'zero' | 'linear' | 'exp'
+        exp_beta=5.0           # controls steepness for exp fall‑off
+):
     """
-    pred:   shape (B, S, 6)
-            pred[..., :5] => regression outputs
-            pred[...,  5] => classification logit (pt>0.9 vs <=0.9)
-
-    target: shape (B, S, ?) 
-            target[..., :5] => ground-truth for the same 5 regression parameters
-            target[...,  5] => the ground-truth pT (used for masking & classification label)
-
+    Weighted MSE per feature.
+    ----------------------------------------------------------
+    • If target == NaN   → weight 0 for that element.
+    • If pt < threshold  → extra weight according to pt_weighting:
+          'none'   : 1     (no change)
+          'zero'   : 0     (ignore hit)
+          'linear' : pt / pt_threshold   (0…1)
+          'exp'    : exp(‑β · (Δpt)/pt_threshold)
     Returns
     -------
-    A scalar = MSE(for pt>0.9) + BCE(for classifying pt>0.9 or not).
+    total_loss  : scalar
+    losses_dict : {f'loss_{name}': tensor}
     """
 
-    # 1) Build a mask for hits with pt>0.9
-    pt = target[..., 5]              # shape (B, S)
-    mse_mask = (pt > 0.9)            # bool mask, same shape (B, S)
+    if pt is None:
+        pt = torch.ones(pred.size(0), device=pred.device, dtype=pred.dtype)
 
-    # classification label = 1 if pt>0.9, else 0
-    class_label = mse_mask.float()   # shape (B, S)
-
-    # 2) MSE on the masked subset
-    # pred[..., :5] => shape (B, S, 5)
-    # target[..., :5] => shape (B, S, 5)
-
-    if mse_mask.any():
-        # gather only the "valid" positions
-        mse_val = F.mse_loss(
-            pred[..., :5][mse_mask],
-            target[..., :5][mse_mask]
-        )
+    # ------- pt weights --------------------------------------------------
+    if pt_weighting == 'none':
+        w_pt = torch.ones_like(pt)
+    elif pt_weighting == 'zero':
+        w_pt = (pt >= pt_threshold).float()
+    elif pt_weighting == 'linear':
+        w_pt = torch.where(pt >= pt_threshold,
+                           torch.ones_like(pt),
+                           pt / pt_threshold)
+    elif pt_weighting == 'exp':
+        w_pt = torch.where(pt >= pt_threshold,
+                           torch.ones_like(pt),
+                           torch.exp(-exp_beta * (pt_threshold - pt) / pt_threshold))
     else:
-        # if no hits exceed 0.9, MSE contributes 0
-        mse_val = 0.0
+        raise ValueError("pt_weighting must be 'none'|'zero'|'linear'|'exp'")
 
-    # 3) Binary cross entropy on entire set
-    # pred[..., 5] => shape (B, S)
-    logits = pred[..., 5]
-    bce_val = F.binary_cross_entropy_with_logits(
-        logits,
-        class_label
-    )
+    # broadcast to (N, F)
+    w_pt = w_pt.unsqueeze(1).expand_as(pred)
 
-    # final combined loss
-    return mse_val+ bce_val
+    # ------- NaN mask ----------------------------------------------------
+    nan_mask = ~torch.isnan(target)         # True where value is *valid*
+    target_filled = torch.nan_to_num(target, nan=0.0)
+
+    # squared error per entry
+    sq_err = (pred - target_filled).pow(2)
+
+    # total weight per entry
+    w = nan_mask.float() * w_pt
+
+    # ------- per‑feature losses -----------------------------------------
+    losses = {}
+    for i, name in enumerate(feature_names):
+        num = (sq_err[:, i] * w[:, i]).sum()
+        den = w[:, i].sum().clamp_min(1e-8)   # avoid /0
+        losses[f'loss_{name}'] = num / den
+
+    # scalar total (mean of feature losses)
+    total_loss = torch.stack(list(losses.values())).mean()
+
+    return total_loss, losses
 
 
 def setup_training(config, device, train_loader):
@@ -85,6 +115,9 @@ def setup_training(config, device, train_loader):
     d_model = wandb.config.d_model if hasattr(wandb.config, 'd_model') else config['model']['d_model']
     n_head = wandb.config.n_head if hasattr(wandb.config, 'n_head') else config['model']['n_head']
 
+    input_size = len(config['model']['input_features'])
+    output_size = len(config['model']['output_features'])
+
     if hasattr(wandb.config, 'dim_feedforward'):
         dim_feedforward = wandb.config.dim_feedforward
     elif hasattr(config['model'], 'dim_feedforward'):
@@ -98,8 +131,8 @@ def setup_training(config, device, train_loader):
     logging.info(f"n_head: {n_head}")
     logging.info(f"dim_feedforward: {dim_feedforward}")
     logging.info(f"dropout: {config['model']['dropout']}")
-    logging.info(f"input_size: {config['model']['input_size']}")
-    logging.info(f"output_size: {config['model']['output_size']}")
+    logging.info(f"input_features: {config['model']['input_features']}")
+    logging.info(f"output_features: {config['model']['output_features']}")
     logging.info(f"initial_lr: {config['training']['scheduler']['initial_lr']}")
 
 
@@ -111,8 +144,8 @@ def setup_training(config, device, train_loader):
             num_encoder_layers = config['model']['num_encoder_layers'],
             d_model = config['model']['d_model'],
             n_head=config['model']['n_head'],
-            input_size = config['model']['input_size'],
-            output_size = config['model']['output_size'],
+            input_size = input_size,
+            output_size = output_size,
             dim_feedforward=config['model']['dim_feedforward'],
             dropout=config['model']['dropout']
         ).to(device)
@@ -126,8 +159,8 @@ def setup_training(config, device, train_loader):
             num_encoder_layers = num_encoder_layers,
             d_model = d_model,
             n_head=n_head,
-            input_size = config['model']['input_size'],
-            output_size = config['model']['output_size'],
+            input_size = input_size,
+            output_size = output_size,
             dim_feedforward=dim_feedforward,
             dropout=config['model']['dropout']
         ).to(device)
@@ -151,9 +184,9 @@ def setup_training(config, device, train_loader):
     #optimizer = torch.optim.Adam(model.parameters(), lr=initial_lr)
     optimizer = torch.optim.AdamW(model.parameters(), lr=initial_lr)
     
-    #lr_scheduler = ReduceLROnPlateau(optimizer, mode=mode, factor=factor, patience=patience, min_lr=min_lr)
+    lr_scheduler = ReduceLROnPlateau(optimizer, mode=mode, factor=factor, patience=patience, min_lr=min_lr)
 
-    
+    """
     lr_scheduler = OneCycleLR(optimizer,
                     max_lr=max_lr,
                     total_steps=total_updates,
@@ -161,11 +194,21 @@ def setup_training(config, device, train_loader):
                     anneal_strategy='cos',
                     div_factor=div_factor,
                     final_div_factor=final_div_factor)
+    """
     
 
     # criterion/loss function
-    loss_fn = nn.MSELoss()
-    #loss_fn = combined_loss
+    #loss_fn = nn.MSELoss()
+
+    output_features = config['model']['output_features']
+    loss_weighting = config['training']['loss_weighting']
+
+    loss_fn = partial(
+    mse_per_feature_loss_weighted,   # the full loss implementation
+    feature_names=output_features,   # fixed positional arg
+    pt_threshold=0.9,
+    pt_weighting=loss_weighting,
+    exp_beta=5.0)
 
     # check whether to load from checkpoint
     if not config['training']['start_from_scratch']:
@@ -203,9 +246,22 @@ def train_epoch(model, optim, train_loader, loss_fn, scaler, lr_scheduler, devic
     backpropagation. Returns the average loss over the whole train data.
     '''
     config_model_type = config['model']['type']
-    input_size = config['model']['input_size']
-    output_size = config['model']['output_size']
+
+    input_features = config['model']['input_features']
+    output_features = config['model']['output_features']
+
+    input_size = len(input_features)
+    output_size = len(output_features)
     accumulation_steps = config['training']['accumulation_steps']
+
+    feature_cols = config['data']['feature_cols']
+
+    cluster_idx = feature_cols.index("cluster_id") 
+
+    input_feature_indices = [feature_cols.index(feat) for feat in input_features]
+    output_feature_indices = [feature_cols.index(feat) for feat in output_features]
+
+    pt_idx = feature_cols.index("pt")
     
     # Get the network in train mode
     torch.set_grad_enabled(True)
@@ -257,17 +313,19 @@ def train_epoch(model, optim, train_loader, loss_fn, scaler, lr_scheduler, devic
             
             # Slice the data tensor
             length_tensor = length_tensor.squeeze(0)
+            in_data_tensor_cpu = data_tensor[..., input_feature_indices]
+            out_data_tensor_cpu = data_tensor[..., output_feature_indices]
+            pt_tensor_cpu = data_tensor[..., pt_idx].squeeze(-1)
 
-            in_data_tensor_cpu = data_tensor[..., :input_size]
-            out_data_tensor_cpu = data_tensor[..., input_size:input_size + output_size]
-
-            cluster_tensor_cpu = data_tensor[..., -1].squeeze(-1)
-            #phi_tensor_cpu = data_tensor[..., 14].squeeze(-1)
+            cluster_tensor_cpu = data_tensor[..., cluster_idx].squeeze(-1)
+            cluster_tensor_cpu = cluster_tensor_cpu.long()
+            length_tensor = length_tensor.long()
 
             length_tensor = length_tensor.to(device)
             in_data_tensor = in_data_tensor_cpu.to(device)
             out_data_tensor = out_data_tensor_cpu.to(device)
             cluster_tensor = cluster_tensor_cpu.to(device)
+            pt_tensor = pt_tensor_cpu.to(device)
             
             #phi_tensor = phi_tensor_cpu.to(device)
             #eta_coord_tensor = eta_coord_tensor_cpu.to(device)
@@ -291,6 +349,7 @@ def train_epoch(model, optim, train_loader, loss_fn, scaler, lr_scheduler, devic
 
                 batched_pred = []
                 batched_target = []
+                batched_pt = []
 
                 B = len(length_tensor)
 
@@ -302,12 +361,16 @@ def train_epoch(model, optim, train_loader, loss_fn, scaler, lr_scheduler, devic
                     # unpad just [0..seq_len) for pred
                     this_pred = pred[b_idx, :seq_len, :]
                     this_target = out_data_tensor[b_idx, :seq_len, :]
+                    this_pt = pt_tensor[b_idx, :seq_len]
                     batched_pred.append(this_pred)
                     batched_target.append(this_target)
+                    batched_pt.append(this_pt)
 
                 
                 pred = torch.cat(batched_pred, dim=0)
                 out_data_tensor = torch.cat(batched_target, dim=0)
+                pt = torch.cat(batched_pt, dim=0)
+                pt = pt.to(dtype=pred.dtype)
 
 
                 if timer:
@@ -315,13 +378,17 @@ def train_epoch(model, optim, train_loader, loss_fn, scaler, lr_scheduler, devic
 
                 if timer:
                     timer.start('loss_calc')
-                loss = loss_fn(pred, out_data_tensor)
+                loss, loss_per_feature = loss_fn(pred, out_data_tensor, pt=pt)
                 if timer:
                     timer.stop()
-            
+
+
             if (loss is None ) or (loss.item() is None):
                 logging.info(f"Loss is None for batch {i}")
                 raise RuntimeError("Loss is None")
+            
+            if loss_per_feature is not None:
+                wandb_logger.log({f'train/{k}': v.item() for k, v in loss_per_feature.items()}, step=step_number)
                 
             loss = loss / accumulation_steps  
             if timer:
@@ -345,7 +412,7 @@ def train_epoch(model, optim, train_loader, loss_fn, scaler, lr_scheduler, devic
             wandb_logger.log({"train/grad_norm": grad_norm}, step=step_number)
             # Add gradient clipping , but before unscale gradients
             scaler.unscale_(optim)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=100.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
             
             if (i + 1) % accumulation_steps == 0:
                 if timer:
@@ -358,7 +425,6 @@ def train_epoch(model, optim, train_loader, loss_fn, scaler, lr_scheduler, devic
 
                 scaler.update()
                 optim.zero_grad()
-                lr_scheduler.step()
 
             # for logging
             total_loss_sum += loss.item()*accumulation_steps
@@ -378,7 +444,6 @@ def train_epoch(model, optim, train_loader, loss_fn, scaler, lr_scheduler, devic
             scaler.step(optim)
             scaler.update()
             optim.zero_grad()
-            lr_scheduler.step()
             
         # Other model types        
     else:
@@ -398,7 +463,7 @@ def train_epoch(model, optim, train_loader, loss_fn, scaler, lr_scheduler, devic
             pred = model(hits, padding_mask=padding_mask)
             pred = torch.unsqueeze(pred[~padding_mask], 0)
         
-            loss = loss_fn(pred, track_params)
+            loss, _  = loss_fn(pred, track_params)
             loss.backward()
             optim.step()
             total_loss_sum += loss.item()
@@ -412,9 +477,23 @@ def evaluate(model, validation_loader, loss_fn, device, config, final_epoch_csv_
     calculating the loss. Returns the average loss over the whole val data.
     '''
     config_model_type = config['model']['type']
-    input_size = config['model']['input_size']
-    output_size = config['model']['output_size']
-    in_out_size = input_size + output_size
+
+    feature_cols = config['data']['feature_cols']
+    input_features = config['model']['input_features']
+    output_features = config['model']['output_features']
+        
+    output_size = len(output_features)
+    input_size = len(input_features)
+
+    pt_idx = feature_cols.index("pt")                
+    eta_idx = feature_cols.index("eta")              
+    particle_id_idx = feature_cols.index("particle_id")  
+    weight_idx = feature_cols.index("weight") 
+    input_feature_indices = [feature_cols.index(feat) for feat in input_features]
+    output_feature_indices = [feature_cols.index(feat) for feat in output_features]
+
+    cluster_idx = feature_cols.index("cluster_id") 
+
     # Get the network in evaluation mode
     model.eval()
     total_loss_sum = 0.
@@ -427,17 +506,19 @@ def evaluate(model, validation_loader, loss_fn, device, config, final_epoch_csv_
             for i,  (data_tensor, length_tensor) in enumerate(validation_loader):    
                 length_tensor = length_tensor.squeeze(0)
 
-                in_data_tensor_cpu   = data_tensor[..., : input_size]     
-                out_data_tensor_cpu  = data_tensor[..., input_size : in_out_size] 
+                in_data_tensor_cpu   = data_tensor[..., input_feature_indices]     
+                out_data_tensor_cpu  = data_tensor[..., output_feature_indices] 
 
-                cluster_tensor_cpu   = data_tensor[..., -1].squeeze(-1)
-                #phi_tensor_cpu       = data_tensor[..., 14].squeeze(-1)
-
+                pt_tensor_cpu = data_tensor[..., pt_idx].squeeze(-1)
+                cluster_tensor_cpu   = data_tensor[..., cluster_idx].squeeze(-1)
+                cluster_tensor_cpu = cluster_tensor_cpu.long()
+                length_tensor = length_tensor.long()
 
                 length_tensor = length_tensor.to(device)
                 in_data_tensor = in_data_tensor_cpu.to(device)
                 out_data_tensor = out_data_tensor_cpu.to(device)
                 cluster_tensor = cluster_tensor_cpu.to(device)
+                pt_tensor = pt_tensor_cpu.to(device)
                 
                 #flex_padding_mask = generate_padding_mask(length_tensor)
                 flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
@@ -449,6 +530,8 @@ def evaluate(model, validation_loader, loss_fn, device, config, final_epoch_csv_
                     
                     batched_pred = []
                     batched_target = []
+                    batched_pt = []
+                    
 
                     num_batches = len(length_tensor)
 
@@ -458,13 +541,17 @@ def evaluate(model, validation_loader, loss_fn, device, config, final_epoch_csv_
                         # unpad just [0..seq_len) for pred
                         this_pred = pred[batch_idx, :seq_len, :]
                         this_target = out_data_tensor[batch_idx, :seq_len, :]
+                        this_pt = pt_tensor[batch_idx, :seq_len]
                         batched_pred.append(this_pred)
                         batched_target.append(this_target)
+                        batched_pt.append(this_pt)
                     
                     pred = torch.cat(batched_pred, dim=0)
                     out_data_tensor = torch.cat(batched_target, dim=0)
+                    pt = torch.cat(batched_pt, dim=0)
+                    pt = pt.to(dtype=pred.dtype)
 
-                    loss = loss_fn(pred, out_data_tensor)
+                    loss, _ = loss_fn(pred, out_data_tensor, pt=pt)
 
                 if i == 0:
                     scores_list = []
@@ -472,14 +559,17 @@ def evaluate(model, validation_loader, loss_fn, device, config, final_epoch_csv_
                     min_cl_size = 2
                     min_samples = 1
                     
+                    length_tensor_cpu = length_tensor.to('cpu')
+                    existing_cluster_ids = [cluster_tensor_cpu[i, :length_tensor_cpu[i]] for i in range(len(length_tensor_cpu))]
                     # Cluster predictions
-                    cluster_labels_list = clustering(batched_pred, min_cl_size=min_cl_size, min_samples=min_samples)
+                    #cluster_labels_list = clustering(batched_pred, min_cl_size=min_cl_size, min_samples=min_samples)
+                    cluster_labels_list = clustering_inception(batched_pred, existing_cluster_ids, min_cl_size=min_cl_size, min_samples=min_samples,cluster_noise=True )
                     
                     # Check the best posible score by passing true data : 
                     #cluster_labels_list = clustering(batched_target, min_cl_size=min_cl_size, min_samples=min_samples)
                     
-                    metrics_data_tensor_cpu  = torch.cat(( data_tensor[..., in_out_size: in_out_size + 2],data_tensor[..., in_out_size + 3 : in_out_size + 5]), dim=-1) 
-                    length_tensor_cpu = length_tensor.to('cpu')
+                    metrics_data_tensor_cpu  = data_tensor[:, :, [pt_idx, eta_idx, particle_id_idx, weight_idx]]
+                    
                     metrics_data_tensor_cpu = [metrics_data_tensor_cpu[i, :length_tensor_cpu[i], :] for i in range(len(length_tensor_cpu))]
 
                     # Check the score if we use clusters from before transformer stage
@@ -501,17 +591,7 @@ def evaluate(model, validation_loader, loss_fn, device, config, final_epoch_csv_
                 total_loss_sum += loss.item()
                 total_count_sum += 1
 
-                # If final epoch, append to CSV
-                if final_epoch_csv_path is not None:
-                    param_names = ["cos_theta", "sin_phi", "cos_phi", "q", "log_p", 'vz', "pt", "eta"]
-                    param_names = param_names[:output_size]
-                    append_predictions_to_csv(
-                        preds=pred,
-                        targets=out_data_tensor,
-                        batch_idx=i, 
-                        csv_path=final_epoch_csv_path,
-                        param_names=param_names
-                    )
+
 
                 
         else:
@@ -525,7 +605,7 @@ def evaluate(model, validation_loader, loss_fn, device, config, final_epoch_csv_
                 pred = model(hits, padding_mask=padding_mask)
                 pred = torch.unsqueeze(pred[~padding_mask], 0)
             
-                loss = loss_fn(pred, track_params)
+                loss, _ = loss_fn(pred, track_params)
                 total_loss_sum += loss.item()
                 total_count_sum += 1
    
@@ -563,7 +643,7 @@ def main(config_path):
     logging.info(f'Device: {device}')
     logging.info(f'Torch cuda version: {torch.version.cuda}')
 
-    torch.manual_seed(37)  # for reproducibility
+    torch.manual_seed(37)  
     
     config_model_type = config['model']['type']
     batch_size = config['training']['batch_size']
@@ -582,7 +662,7 @@ def main(config_path):
 
         sweep_train_fraction = wandb.config.train_fraction if hasattr(wandb.config, 'train_fraction') else 1.0
 
-        train_loader, valid_loader = get_train_valid_dataloaders(data_folder, batch_size=batch_size, train_fraction=sweep_train_fraction) 
+        train_loader, valid_loader = get_train_valid_dataloaders(config, batch_size=batch_size, train_fraction=sweep_train_fraction) 
     else:
         data_path = get_file_path(config['data']['data_dir'], config['data']['data_file'])
     
@@ -619,9 +699,8 @@ def main(config_path):
     count = 0
 
     # To check for spikes in validation loss
-    # If the validation loss spikes >= 100% from best
-    min_epoch_for_spike_check = 5
-    spike_factor = 2
+    min_epoch_for_spike_check = 4
+    spike_factor = 1.3
     
     spike_count = 0
 
@@ -633,7 +712,7 @@ def main(config_path):
         val_loss, mean_dm_score, mean_track_ml_score = evaluate(model, valid_loader, loss_fn, device, config)
         
         # adjust learning rate based on validation loss
-        #lr_scheduler.step(val_loss)
+        lr_scheduler.step(val_loss)
         if config['training']['scheduler']['verbose']:
             current_lr = optimizer.param_groups[0]['lr'] # get last lr
             logging.info(f"lr: {current_lr}")
@@ -644,11 +723,6 @@ def main(config_path):
         train_losses.append(train_loss)
         val_losses.append(val_loss)
 
-        time_epoch_stats = timer.get_stats(reset=True) 
-        wandb_logger.log({'train/train_loss' : train_loss, 'train/epoch' : epoch,
-                        'train/validation loss' : val_loss, 'train/mean_dm_score' : mean_dm_score, 
-                        'train/mean_track_ml_score' : mean_track_ml_score,
-                        **time_epoch_stats}, step = (epoch + 1) * len(train_loader))
 
         if val_loss < min_val_loss:
             # If the model has a new best validation loss, save it as "the best"
@@ -661,6 +735,12 @@ def main(config_path):
             wandb_logger.save_model(model, f'model_last.pth', optimizer, lr_scheduler, epoch, output_dir)
             logging.info(f"Checkpoint saved to output_dir. Last of run. Epoch: {epoch}")
             count += 1
+        
+        time_epoch_stats = timer.get_stats(reset=True) 
+        wandb_logger.log({'train/train_loss' : train_loss, 'train/epoch' : epoch,
+                        'train/validation loss' : val_loss, 'train/min_val_loss' : min_val_loss, 'train/mean_dm_score' : mean_dm_score, 
+                        'train/mean_track_ml_score' : mean_track_ml_score,
+                        **time_epoch_stats}, step = (epoch + 1) * len(train_loader))
 
         
         #  If the model's val loss spikes >= 100% from best

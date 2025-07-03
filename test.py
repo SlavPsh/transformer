@@ -1,7 +1,7 @@
 import torch
 from data_processing.dataset import HitsDataset, get_dataloaders
 from data_processing.dataset import load_trackml_data, PAD_TOKEN
-from evaluation.scoring import calc_score_trackml, calculate_bined_scores
+from evaluation.scoring import calc_score_trackml, calculate_bined_scores, append_predictions_to_csv
 from evaluation.clustering import clustering
 #from evaluation.plotting import plot_heatmap
 
@@ -14,11 +14,15 @@ from coolname import generate_slug
 import wandb
 from data_processing.tensor_dataloader import get_test_dataloader
 from utils.timing_utils import StepTimer
+from custom_model import generate_padding_mask, generate_cluster_padding_mask
 
 
 def load_model(config, device):
 
     config_model_type = config['model']['type']
+    input_size = len(config['model']['input_features'])
+    output_size = len(config['model']['output_features'])
+
     logging.info(f"Model type: {config_model_type}")
     
     #sweep_att_mask = wandb.config.use_att_mask if 'use_att_mask' in wandb.config else config_att_mask
@@ -31,8 +35,8 @@ def load_model(config, device):
                 num_encoder_layers = config['model']['num_encoder_layers'],
                 d_model = config['model']['d_model'],
                 n_head=config['model']['n_head'],
-                input_size = config['model']['input_size'],
-                output_size = config['model']['output_size'],
+                input_size = input_size,
+                output_size = output_size,
                 dim_feedforward=config['model']['dim_feedforward'],
                 dropout=config['model']['dropout']
             ).to(device)
@@ -46,8 +50,8 @@ def load_model(config, device):
             num_encoder_layers = config['model']['num_encoder_layers'],
             d_model = config['model']['d_model'],
             n_head=config['model']['n_head'],
-            input_size = config['model']['input_size'],
-            output_size = config['model']['output_size'],
+            input_size = input_size,
+            output_size = output_size,
             dim_feedforward=config['model']['dim_feedforward'],
             dropout=config['model']['dropout']
         ).to(device)
@@ -59,8 +63,8 @@ def load_model(config, device):
             num_encoder_layers = config['model']['num_encoder_layers'],
             d_model = config['model']['d_model'],
             n_head=config['model']['n_head'],
-            input_size = config['model']['input_size'],
-            output_size = config['model']['output_size'],
+            input_size = input_size,
+            output_size = output_size,
             dim_feedforward=config['model']['dim_feedforward'],
             dropout=config['model']['dropout']
         ).to(device)
@@ -99,6 +103,24 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
     '''
     # Get the network in evaluation mode
     config_model_type = config['model']['type']
+
+    input_features = config['model']['input_feature']
+    output_features = config['model']['output_feature']
+
+    input_size = len(input_features)
+    output_size = len(output_features)
+
+    feature_cols = config['data']['feature_cols']
+
+    input_feature_indices = [feature_cols.index(feat) for feat in input_features]
+    output_feature_indices = [feature_cols.index(feat) for feat in output_features]
+
+    pt_idx = feature_cols.index("pt")                
+    eta_idx = feature_cols.index("eta")              
+    particle_id_idx = feature_cols.index("particle_id")  
+    weight_idx = feature_cols.index("weight") 
+    cluster_idx = feature_cols.index("cluster_id") 
+
     torch.set_grad_enabled(False)
     model.eval()
     pred_list = []
@@ -114,21 +136,22 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
     if config_model_type == 'flex_attention':
         for i,  (data_tensor, length_tensor) in enumerate(test_loader):
             
-            in_data_tensor_cpu = data_tensor[..., :3]
+            in_data_tensor_cpu = data_tensor[..., input_feature_indices]
+            true_params_cpu = data_tensor[..., output_feature_indices]
             #pd.DataFrame(truth_rows, columns=['hit_id',  THESE COLUMNS :  'pt', 'eta', 'particle_id', 'weight'])
-            out_data_tensor_cpu =  torch.cat(( data_tensor[..., 9:11],data_tensor[..., 12:14]), dim=-1)
-            
-            #out_data_tensor_cpu = torch.cat(( data_tensor[..., 8:10],data_tensor[..., 11:13]), dim=-1)
-            #cluster_tensor_cpu = data_tensor[..., 13:].squeeze(-1)
+            out_data_tensor_cpu =  data_tensor[..., [pt_idx, eta_idx, particle_id_idx, weight_idx]]
+
+            #cluster_tensor_cpu = data_tensor[..., cluster_idx].squeeze(-1)
+            #cluster_tensor_cpu = cluster_tensor_cpu.long()
+            length_tensor = length_tensor.long()
             
             in_data_tensor = in_data_tensor_cpu.to(device)
             out_data_tensor = out_data_tensor_cpu.to(device)
             #cluster_tensor = cluster_tensor_cpu.to(device)
 
             length_tensor = length_tensor.to(device)
-            
-            from custom_model import generate_padding_mask
 
+            #flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
             flex_padding_mask = generate_padding_mask(length_tensor)
                 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
@@ -137,9 +160,22 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
             if timer:
                 timer.start('unmasking')
             pred_list = [pred[i, :length_tensor[i], :] for i in range(len(length_tensor))]
-            out_data_tensor = [out_data_tensor[i, :length_tensor[i], :] for i in range(len(length_tensor))]
+            true_params_list = [true_params_cpu[i, :length_tensor[i], :] for i in range(len(length_tensor))]
+            out_data_list = [out_data_tensor[i, :length_tensor[i], :] for i in range(len(length_tensor))]
             if timer:
                 timer.stop()
+
+            output_dir = wandb_logger.get_output_dir() if wandb_logger else None
+            predictions_csv_path = f"{output_dir}/model_predictions.csv" if output_dir else None
+            param_names = feature_cols[output_feature_indices]
+            
+            append_predictions_to_csv(
+                preds_list=pred_list,
+                targets_list=true_params_list,
+                out_data_list=out_data_list,
+                csv_path=predictions_csv_path,
+                param_names=param_names
+            )
             
             if timer:
                 timer.start('clustering')
@@ -187,7 +223,7 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
             if timer:
                 timer.stop()
 
-            for cluster_labels, track_labels in zip(cluster_labels_list, out_data_tensor):
+            for cluster_labels, track_labels in zip(cluster_labels_list, out_data_list):
                 event_score, scores, nr_particles, predicted_tracks, true_tracks = calc_score_trackml(cluster_labels, track_labels, pt_threshold=0.9)
                 scores_list.append(event_score)
                 if wandb_logger != None:
