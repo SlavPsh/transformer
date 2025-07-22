@@ -403,39 +403,39 @@ class TransformerRegressor(nn.Module):
 
     def forward(self, input, batch_name, flex_padding_mask, timer=None):
         # TODO: exclude input and output layer compute for padding tokens
-        if timer:
-            timer.start('input_layer')
+        B , S = input.size(0), input.size(1)
+        if timer and batch_name != "test_0":
+            timer.start('embedding_layer')
         
         x = self.input_layer(input)
         
-        if timer:
-            timer.stop()
-        B , S = input.size(0), input.size(1)
         #S = input.size(0)
+        if timer and batch_name != "test_0":
+            timer.stop()
 
-        if timer:
-            timer.start('block_mask')
+        if timer and batch_name != "test_0":
+            timer.start('block_mask_creation')
 
         key = (batch_name, B, S)
         mask_gpu = self.build_or_reuse_gpu_mask(key, flex_padding_mask, B, S)
 
-        if timer:
+        if timer and batch_name != "test_0":
             timer.stop()
         
-        if timer:
-            timer.start('encoder')
+        if timer and batch_name != "test_0":
+            timer.start('transformer_encoder')
 
         memory = self.encoder(src=x, flex_mask=mask_gpu)
         
-        if timer:
+        if timer and batch_name != "test_0":
             timer.stop()
         
-        if timer:
-            timer.start('decoder')
+        if timer and batch_name != "test_0":
+            timer.start('output_vector_formation')
         
         out = self.decoder(memory)
         
-        if timer:
+        if timer and batch_name != "test_0":
             timer.stop()
         #if torch.isnan(memory).any(): 
         #    logging.error("Memory contains NaN values. Check attention mask.")

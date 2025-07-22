@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.optim.lr_scheduler import OneCycleLR
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 import numpy as np
 
 # Import supporting tools
@@ -22,85 +23,9 @@ from custom_model import generate_cluster_padding_mask, generate_padding_mask, g
 
 import torch.profiler
 from evaluation.scoring import calc_score_trackml
-from evaluation.clustering import clustering, clustering_inception
+from evaluation.clustering import clustering, clustering_inception, clustering_HDBSCAN
 
-def mse_per_feature_loss(pred, target, feature_names):
-    losses = {}
-    for i, feature in enumerate(feature_names):
-        loss_feature = F.mse_loss(pred[:, i], target[:, i])
-        losses[f'loss_{feature}'] = loss_feature
-    total_loss = torch.stack(list(losses.values())).mean()
-    return total_loss, losses
-
-
-def mse_per_feature_loss_weighted(
-        pred,            # (N, F)  float32/float16
-        target,          # (N, F)  same dtype; may contain NaNs
-        feature_names,   # list[str]  len == F
-        pt=None,         # (N,) optional, pt per hit
-        *,
-        pt_threshold=0.9,
-        pt_weighting='none',   # 'none' | 'zero' | 'linear' | 'exp'
-        exp_beta=5.0           # controls steepness for exp fall‑off
-):
-    """
-    Weighted MSE per feature.
-    ----------------------------------------------------------
-    • If target == NaN   → weight 0 for that element.
-    • If pt < threshold  → extra weight according to pt_weighting:
-          'none'   : 1     (no change)
-          'zero'   : 0     (ignore hit)
-          'linear' : pt / pt_threshold   (0…1)
-          'exp'    : exp(‑β · (Δpt)/pt_threshold)
-    Returns
-    -------
-    total_loss  : scalar
-    losses_dict : {f'loss_{name}': tensor}
-    """
-
-    if pt is None:
-        pt = torch.ones(pred.size(0), device=pred.device, dtype=pred.dtype)
-
-    # ------- pt weights --------------------------------------------------
-    if pt_weighting == 'none':
-        w_pt = torch.ones_like(pt)
-    elif pt_weighting == 'zero':
-        w_pt = (pt >= pt_threshold).float()
-    elif pt_weighting == 'linear':
-        w_pt = torch.where(pt >= pt_threshold,
-                           torch.ones_like(pt),
-                           pt / pt_threshold)
-    elif pt_weighting == 'exp':
-        w_pt = torch.where(pt >= pt_threshold,
-                           torch.ones_like(pt),
-                           torch.exp(-exp_beta * (pt_threshold - pt) / pt_threshold))
-    else:
-        raise ValueError("pt_weighting must be 'none'|'zero'|'linear'|'exp'")
-
-    # broadcast to (N, F)
-    w_pt = w_pt.unsqueeze(1).expand_as(pred)
-
-    # ------- NaN mask ----------------------------------------------------
-    nan_mask = ~torch.isnan(target)         # True where value is *valid*
-    target_filled = torch.nan_to_num(target, nan=0.0)
-
-    # squared error per entry
-    sq_err = (pred - target_filled).pow(2)
-
-    # total weight per entry
-    w = nan_mask.float() * w_pt
-
-    # ------- per‑feature losses -----------------------------------------
-    losses = {}
-    for i, name in enumerate(feature_names):
-        num = (sq_err[:, i] * w[:, i]).sum()
-        den = w[:, i].sum().clamp_min(1e-8)   # avoid /0
-        losses[f'loss_{name}'] = num / den
-
-    # scalar total (mean of feature losses)
-    total_loss = torch.stack(list(losses.values())).mean()
-
-    return total_loss, losses
+from evaluation.loss import supcon_loss_flat
 
 
 def setup_training(config, device, train_loader):
@@ -114,9 +39,12 @@ def setup_training(config, device, train_loader):
     num_encoder_layers = wandb.config.num_encoder_layers if hasattr(wandb.config, 'num_encoder_layers') else config['model']['num_encoder_layers']
     d_model = wandb.config.d_model if hasattr(wandb.config, 'd_model') else config['model']['d_model']
     n_head = wandb.config.n_head if hasattr(wandb.config, 'n_head') else config['model']['n_head']
+    
 
     input_size = len(config['model']['input_features'])
-    output_size = len(config['model']['output_features'])
+
+    output_size_set = config['model']['output_size'] if 'output_size' in config['model'] else len(config['model']['output_features'])
+    output_size = wandb.config.output_size if hasattr(wandb.config, 'output_size') else output_size_set
 
     if hasattr(wandb.config, 'dim_feedforward'):
         dim_feedforward = wandb.config.dim_feedforward
@@ -133,7 +61,7 @@ def setup_training(config, device, train_loader):
     logging.info(f"dropout: {config['model']['dropout']}")
     logging.info(f"input_features: {config['model']['input_features']}")
     logging.info(f"output_features: {config['model']['output_features']}")
-    logging.info(f"initial_lr: {config['training']['scheduler']['initial_lr']}")
+    
 
 
     
@@ -180,11 +108,26 @@ def setup_training(config, device, train_loader):
     final_div_factor = initial_lr / min_lr
     updates_per_epoch = (len(train_loader) + accumulation_steps - 1) // accumulation_steps
     total_updates = updates_per_epoch * config['training']['total_epochs']
+
+
+    # Change lr based on batch size and model size 
+    batch_size = config['training']['batch_size']
+    lr_scale = (batch_size / 8) * np.sqrt(128 / d_model)
+
+    initial_lr = initial_lr * lr_scale
+    min_lr = min_lr * lr_scale
+
+    logging.info(f"initial_lr: {initial_lr}")
+
+
     
     #optimizer = torch.optim.Adam(model.parameters(), lr=initial_lr)
     optimizer = torch.optim.AdamW(model.parameters(), lr=initial_lr)
     
     lr_scheduler = ReduceLROnPlateau(optimizer, mode=mode, factor=factor, patience=patience, min_lr=min_lr)
+
+
+    #lr_scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2,  eta_min=min_lr)
 
     """
     lr_scheduler = OneCycleLR(optimizer,
@@ -203,12 +146,18 @@ def setup_training(config, device, train_loader):
     output_features = config['model']['output_features']
     loss_weighting = config['training']['loss_weighting']
 
+    """
     loss_fn = partial(
     mse_per_feature_loss_weighted,   # the full loss implementation
     feature_names=output_features,   # fixed positional arg
     pt_threshold=0.9,
     pt_weighting=loss_weighting,
     exp_beta=5.0)
+    """
+    temperature = wandb.config.temperature if hasattr(wandb.config, 'temperature') else 0.05
+    loss_fn = partial(supcon_loss_flat, 
+                      pt_threshold=0.9,
+                      temperature=temperature)
 
     # check whether to load from checkpoint
     if not config['training']['start_from_scratch']:
@@ -262,6 +211,8 @@ def train_epoch(model, optim, train_loader, loss_fn, scaler, lr_scheduler, devic
     output_feature_indices = [feature_cols.index(feat) for feat in output_features]
 
     pt_idx = feature_cols.index("pt")
+    pid_idx = feature_cols.index("particle_id")
+    event_idx = feature_cols.index("event_id")
     
     # Get the network in train mode
     torch.set_grad_enabled(True)
@@ -314,8 +265,11 @@ def train_epoch(model, optim, train_loader, loss_fn, scaler, lr_scheduler, devic
             # Slice the data tensor
             length_tensor = length_tensor.squeeze(0)
             in_data_tensor_cpu = data_tensor[..., input_feature_indices]
-            out_data_tensor_cpu = data_tensor[..., output_feature_indices]
+            #out_data_tensor_cpu = data_tensor[..., output_feature_indices]
             pt_tensor_cpu = data_tensor[..., pt_idx].squeeze(-1)
+
+            pid_tensor_cpu = data_tensor[..., pid_idx].squeeze(-1)
+            event_tensor_cpu = data_tensor[..., event_idx].squeeze(-1)  # Assuming the first feature is event ID
 
             cluster_tensor_cpu = data_tensor[..., cluster_idx].squeeze(-1)
             cluster_tensor_cpu = cluster_tensor_cpu.long()
@@ -323,9 +277,11 @@ def train_epoch(model, optim, train_loader, loss_fn, scaler, lr_scheduler, devic
 
             length_tensor = length_tensor.to(device)
             in_data_tensor = in_data_tensor_cpu.to(device)
-            out_data_tensor = out_data_tensor_cpu.to(device)
+            #out_data_tensor = out_data_tensor_cpu.to(device)
             cluster_tensor = cluster_tensor_cpu.to(device)
             pt_tensor = pt_tensor_cpu.to(device)
+            pid_tensor = pid_tensor_cpu.to(device)
+            event_tensor = event_tensor_cpu.to(device)
             
             #phi_tensor = phi_tensor_cpu.to(device)
             #eta_coord_tensor = eta_coord_tensor_cpu.to(device)
@@ -346,10 +302,9 @@ def train_epoch(model, optim, train_loader, loss_fn, scaler, lr_scheduler, devic
                 if timer:
                     timer.start('unmasking_pred')
 
-
-                batched_pred = []
                 batched_target = []
-                batched_pt = []
+
+                batched_pred, batched_pid, batched_evt, batched_pt = [], [], [], []
 
                 B = len(length_tensor)
 
@@ -360,17 +315,25 @@ def train_epoch(model, optim, train_loader, loss_fn, scaler, lr_scheduler, devic
                         seq_len = length_tensor[b_idx].item()
                     # unpad just [0..seq_len) for pred
                     this_pred = pred[b_idx, :seq_len, :]
-                    this_target = out_data_tensor[b_idx, :seq_len, :]
+                    #this_target = out_data_tensor[b_idx, :seq_len, :]
                     this_pt = pt_tensor[b_idx, :seq_len]
+                    this_pid = pid_tensor[b_idx, :seq_len]
+                    this_event = event_tensor[b_idx, :seq_len]
                     batched_pred.append(this_pred)
-                    batched_target.append(this_target)
+                    #batched_target.append(this_target)
                     batched_pt.append(this_pt)
+                    batched_pid.append(this_pid)
+                    batched_evt.append(this_event)  # Event ID for each batch
 
                 
                 pred = torch.cat(batched_pred, dim=0)
-                out_data_tensor = torch.cat(batched_target, dim=0)
+                #out_data_tensor = torch.cat(batched_target, dim=0)
                 pt = torch.cat(batched_pt, dim=0)
                 pt = pt.to(dtype=pred.dtype)
+                loss_per_feature = None
+
+                pid_flat = torch.cat(batched_pid, dim=0)         # (N,)
+                evt_flat = torch.cat(batched_evt, dim=0)         # (N,)
 
 
                 if timer:
@@ -378,7 +341,8 @@ def train_epoch(model, optim, train_loader, loss_fn, scaler, lr_scheduler, devic
 
                 if timer:
                     timer.start('loss_calc')
-                loss, loss_per_feature = loss_fn(pred, out_data_tensor, pt=pt)
+                #loss, loss_per_feature = loss_fn(pred, out_data_tensor, pt=pt)
+                loss = loss_fn(pred, pid_flat, evt_flat, pt)
                 if timer:
                     timer.stop()
 
@@ -488,6 +452,7 @@ def evaluate(model, validation_loader, loss_fn, device, config, final_epoch_csv_
     pt_idx = feature_cols.index("pt")                
     eta_idx = feature_cols.index("eta")              
     particle_id_idx = feature_cols.index("particle_id")  
+    event_idx = feature_cols.index("event_id")
     weight_idx = feature_cols.index("weight") 
     input_feature_indices = [feature_cols.index(feat) for feat in input_features]
     output_feature_indices = [feature_cols.index(feat) for feat in output_features]
@@ -507,18 +472,22 @@ def evaluate(model, validation_loader, loss_fn, device, config, final_epoch_csv_
                 length_tensor = length_tensor.squeeze(0)
 
                 in_data_tensor_cpu   = data_tensor[..., input_feature_indices]     
-                out_data_tensor_cpu  = data_tensor[..., output_feature_indices] 
+                #out_data_tensor_cpu  = data_tensor[..., output_feature_indices] 
 
                 pt_tensor_cpu = data_tensor[..., pt_idx].squeeze(-1)
+                pid_tensor_cpu = data_tensor[..., particle_id_idx].squeeze(-1)
+                event_tensor_cpu = data_tensor[..., event_idx].squeeze(-1) 
                 cluster_tensor_cpu   = data_tensor[..., cluster_idx].squeeze(-1)
                 cluster_tensor_cpu = cluster_tensor_cpu.long()
                 length_tensor = length_tensor.long()
 
                 length_tensor = length_tensor.to(device)
                 in_data_tensor = in_data_tensor_cpu.to(device)
-                out_data_tensor = out_data_tensor_cpu.to(device)
+                #out_data_tensor = out_data_tensor_cpu.to(device)
                 cluster_tensor = cluster_tensor_cpu.to(device)
                 pt_tensor = pt_tensor_cpu.to(device)
+                pid_tensor = pid_tensor_cpu.to(device)
+                event_tensor = event_tensor_cpu.to(device)
                 
                 #flex_padding_mask = generate_padding_mask(length_tensor)
                 flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
@@ -531,6 +500,8 @@ def evaluate(model, validation_loader, loss_fn, device, config, final_epoch_csv_
                     batched_pred = []
                     batched_target = []
                     batched_pt = []
+                    batched_pid = []
+                    batched_event = []
                     
 
                     num_batches = len(length_tensor)
@@ -540,30 +511,37 @@ def evaluate(model, validation_loader, loss_fn, device, config, final_epoch_csv_
                         seq_len = length_tensor[batch_idx].item()
                         # unpad just [0..seq_len) for pred
                         this_pred = pred[batch_idx, :seq_len, :]
-                        this_target = out_data_tensor[batch_idx, :seq_len, :]
+                        #this_target = out_data_tensor[batch_idx, :seq_len, :]
                         this_pt = pt_tensor[batch_idx, :seq_len]
+                        this_pid = pid_tensor[batch_idx, :seq_len]
+                        this_event = event_tensor[batch_idx, :seq_len]
                         batched_pred.append(this_pred)
-                        batched_target.append(this_target)
+                        #batched_target.append(this_target)
                         batched_pt.append(this_pt)
+                        batched_pid.append(this_pid)
+                        batched_event.append(this_event)  # Event ID for each batch
                     
                     pred = torch.cat(batched_pred, dim=0)
-                    out_data_tensor = torch.cat(batched_target, dim=0)
+                    pid_flat = torch.cat(batched_pid, dim=0)
+                    evt_flat = torch.cat(batched_event, dim=0)
+                    #out_data_tensor = torch.cat(batched_target, dim=0)
                     pt = torch.cat(batched_pt, dim=0)
                     pt = pt.to(dtype=pred.dtype)
 
-                    loss, _ = loss_fn(pred, out_data_tensor, pt=pt)
+                    #loss, _ = loss_fn(pred, out_data_tensor, pt=pt)
+                    loss = loss_fn(pred, pid_flat, evt_flat, pt)
 
                 if i == 0:
                     scores_list = []
                     track_ml_scores_list = []
-                    min_cl_size = 2
+                    epsilon = 2
                     min_samples = 1
                     
                     length_tensor_cpu = length_tensor.to('cpu')
-                    existing_cluster_ids = [cluster_tensor_cpu[i, :length_tensor_cpu[i]] for i in range(len(length_tensor_cpu))]
+                    #existing_cluster_ids = [cluster_tensor_cpu[i, :length_tensor_cpu[i]] for i in range(len(length_tensor_cpu))]
                     # Cluster predictions
-                    #cluster_labels_list = clustering(batched_pred, min_cl_size=min_cl_size, min_samples=min_samples)
-                    cluster_labels_list = clustering_inception(batched_pred, existing_cluster_ids, min_cl_size=min_cl_size, min_samples=min_samples,cluster_noise=True )
+                    cluster_labels_list = clustering_HDBSCAN(batched_pred, min_cl_size=epsilon, min_samples=min_samples)
+                    #cluster_labels_list = clustering_inception(batched_pred, existing_cluster_ids, epsilon=epsilon, min_samples=min_samples,cluster_noise=True )
                     
                     # Check the best posible score by passing true data : 
                     #cluster_labels_list = clustering(batched_target, min_cl_size=min_cl_size, min_samples=min_samples)
@@ -583,7 +561,7 @@ def evaluate(model, validation_loader, loss_fn, device, config, final_epoch_csv_
                     mean_dm_score = sum(scores_list) / len(scores_list)
                     mean_track_ml_score = sum(track_ml_scores_list) / len(track_ml_scores_list)
 
-                    logging.info(f"Eval Batch {i} . Mean DM score {mean_dm_score} with min_cl_size {min_cl_size} and min_samples {min_samples}")
+                    logging.info(f"Eval Batch {i} . Mean DM score {mean_dm_score} with epsilon {epsilon} and min_samples {min_samples}")
                     logging.info(f"Eval Batch {i} . Mean trackML score {mean_track_ml_score}")
 
                     
@@ -699,8 +677,8 @@ def main(config_path):
     count = 0
 
     # To check for spikes in validation loss
-    min_epoch_for_spike_check = 4
-    spike_factor = 1.3
+    min_epoch_for_spike_check = 5
+    spike_factor = 1.2
     
     spike_count = 0
 
@@ -713,6 +691,7 @@ def main(config_path):
         
         # adjust learning rate based on validation loss
         lr_scheduler.step(val_loss)
+        #lr_scheduler.step()
         if config['training']['scheduler']['verbose']:
             current_lr = optimizer.param_groups[0]['lr'] # get last lr
             logging.info(f"lr: {current_lr}")
@@ -743,7 +722,7 @@ def main(config_path):
                         **time_epoch_stats}, step = (epoch + 1) * len(train_loader))
 
         
-        #  If the model's val loss spikes >= 100% from best
+        #  If the model's val loss spikes to more than spike_factor from best
         #    and we are past some min_epoch_for_spike_check
         if (spike_count >= min_epoch_for_spike_check) and (val_loss >= spike_factor * min_val_loss):
             logging.info(f"Val loss spiked: {val_loss:.4f} >= {spike_factor} * {min_val_loss:.4f}.")
@@ -751,7 +730,7 @@ def main(config_path):
             # Reload from best
             best_ckpt_path = os.path.join(output_dir, "model_best.pth")
             if os.path.exists(best_ckpt_path):
-                ckpt = torch.load(best_ckpt_path)
+                ckpt = torch.load(best_ckpt_path, weights_only=False)
                 #Get the current LR from  optimizer param groups
                 current_lrs = [pg["lr"] for pg in optimizer.param_groups]
 
@@ -760,11 +739,11 @@ def main(config_path):
                 lr_scheduler.load_state_dict(ckpt['scheduler_state'])
                 
                 # reduce LR manually
-                #  Overwrite the LR in each param group using the *old* LR, scaled by 0.5
+                #  Overwrite the LR in each param group using the *old* LR, scaled by 0.6
                 for group_idx, param_group in enumerate(optimizer.param_groups):
-                    param_group["lr"] = current_lrs[group_idx] * 0.5
+                    param_group["lr"] = current_lrs[group_idx] * 0.6
 
-                logging.info(f"LR manually halved after spike. New LR: {optimizer.param_groups[0]['lr']}")
+                logging.info(f"LR manually changed after spike. New LR: {optimizer.param_groups[0]['lr']}")
                 spike_count = 0
             else:
                 logging.warning("No model_best.pth found to reload from!")
@@ -772,7 +751,7 @@ def main(config_path):
         else:
             # increment the spike count
             spike_count += 1
-
+        
         if count >= early_stopping_epoch:
             logging.info("Early stopping triggered")
             break

@@ -204,9 +204,12 @@ def calc_score(pred_lbl, true_lbl):
     tracks = _analyze_tracks(truth, submission) 
     return score_event(tracks), efficiency_scores(tracks, nr_particles)
 
-def calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges):
+def calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges, pt_threshold = 0.9):
     # Extract bin_params from the keys of bin_ranges
     bin_params = list(bin_ranges.keys())
+
+    predicted_tracks = predicted_tracks[predicted_tracks["pt"]>pt_threshold].copy()
+    true_tracks = true_tracks[true_tracks["pt"]>pt_threshold].copy()
 
     # Generate bin edges using numpy.arange
     # Create bins with -inf and inf for outer bins
@@ -279,7 +282,7 @@ def calc_score_trackml(pred_lbl, true_lbl, pt_threshold=0.9):
         Predicted cluster labels for each hit (same order as 'true_lbl').
     true_lbl : array-like
         True info for each hit, shaped e.g. (N,4): [pt, eta, particle_id, weight]
-        or your arrangement. The 1st entry is pt, 2nd is eta, 3rd is particle_id, 4th is weight.
+     The 1st entry is pt, 2nd is eta, 3rd is particle_id, 4th is weight.
     pt_threshold : float, optional
         Only tracks above this pt are included in efficiency calculations,
         including the count of n_particles.
@@ -399,15 +402,18 @@ def calc_edge_efficiency(pred_lbl, true_lbl):
 
 
 
-def append_predictions_to_csv(preds_list, targets_list, out_data_list, csv_path, param_names=None):
+def append_predictions_to_csv(preds_list, targets_list, out_data_list, cluster_list, input_list, csv_path, param_names=None):
     import torch
     import pandas as pd
     import os
 
     # Concatenate once on GPU, then move to CPU
+    input_tensor = torch.cat(input_list, dim=0).float().detach().cpu()
     preds_tensor = torch.cat(preds_list, dim=0).float().detach().cpu()
     targets_tensor = torch.cat(targets_list, dim=0).float().detach().cpu()
     particle_id_tensor = torch.cat([out[:, 2] for out in out_data_list], dim=0).long().detach().cpu()
+    cluster_id_tensor = torch.cat(cluster_list, dim=0).long().detach().cpu()
+    pt_tensor = torch.cat([out[:, 0] for out in out_data_list], dim=0).float().detach().cpu()
 
     # batch_id creation with integer type
     batch_ids = torch.cat([
@@ -416,9 +422,12 @@ def append_predictions_to_csv(preds_list, targets_list, out_data_list, csv_path,
     ]).cpu()
 
     # Convert tensors to numpy arrays
+    input_np = input_tensor.numpy()
     preds_np = preds_tensor.numpy()
     targets_np = targets_tensor.numpy()
+    cluster_np = cluster_id_tensor.numpy()
     particle_ids_np = particle_id_tensor.numpy()
+    pt_np = pt_tensor.numpy()
     batch_ids_np = batch_ids.numpy()
 
     # Handle parameter names
@@ -430,12 +439,18 @@ def append_predictions_to_csv(preds_list, targets_list, out_data_list, csv_path,
     data_dict = {
         "batch_id": batch_ids_np,
         "particle_id": particle_ids_np,
+        "pt" : pt_np,
+        "cluster_id" : cluster_np,
     }
     for i, pname in enumerate(param_names):
         data_dict[f"pred_{pname}"] = preds_np[:, i]
         data_dict[f"true_{pname}"] = targets_np[:, i]
 
-    # Write to CSV efficiently
+    data_dict["x"] = input_np[:, 0]
+    data_dict["y"] = input_np[:, 1]
+    data_dict["z"] = input_np[:, 2]
+
+    # Write to CSV 
     df_batch = pd.DataFrame(data_dict)
 
     file_exists = os.path.isfile(csv_path)

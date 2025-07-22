@@ -2,7 +2,10 @@ import torch
 from data_processing.dataset import HitsDataset, get_dataloaders
 from data_processing.dataset import load_trackml_data, PAD_TOKEN
 from evaluation.scoring import calc_score_trackml, calculate_bined_scores, append_predictions_to_csv
-from evaluation.clustering import clustering
+from evaluation.clustering import clustering, clustering_inception
+from evaluation.clustering import clustering, clustering_inception, clustering_HDBSCAN,clustering_similarity
+from evaluation.loss import supcon_loss_flat
+
 #from evaluation.plotting import plot_heatmap
 
 # Import supporting tools
@@ -17,11 +20,16 @@ from utils.timing_utils import StepTimer
 from custom_model import generate_padding_mask, generate_cluster_padding_mask
 
 
+import os
+import numpy as np
+
+
+
 def load_model(config, device):
 
     config_model_type = config['model']['type']
     input_size = len(config['model']['input_features'])
-    output_size = len(config['model']['output_features'])
+    output_size = config['model']['output_size'] if 'output_size' in config['model'] else len(config['model']['output_features'])
 
     logging.info(f"Model type: {config_model_type}")
     
@@ -74,9 +82,9 @@ def load_model(config, device):
         logging.error('Checkpoint path must be provided for evaluation.')
     else:
         if device.type == 'cpu':
-            checkpoint = torch.load(config['model']['checkpoint_path'], map_location=torch.device('cpu'))
+            checkpoint = torch.load(config['model']['checkpoint_path'], map_location=torch.device('cpu'), weights_only=False)
         else:
-            checkpoint = torch.load(config['model']['checkpoint_path'])
+            checkpoint = torch.load(config['model']['checkpoint_path'], weights_only=False)
 
         logging.info(f"Checkpoint :  {checkpoint.keys()}")
         model.load_state_dict(checkpoint['model_state_dict'])
@@ -97,18 +105,18 @@ def load_model(config, device):
     model.eval()
     return model 
 
-def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, config, wandb_logger=None, timer=None):
+def test_main(model, test_loader, epsilon, min_samples, bin_ranges, device, config, wandb_logger=None, timer=None):
     '''
     Evaluates the network on the test data. Returns the predictions and scores.
     '''
     # Get the network in evaluation mode
     config_model_type = config['model']['type']
 
-    input_features = config['model']['input_feature']
-    output_features = config['model']['output_feature']
+    input_features = config['model']['input_features']
+    output_features = config['model']['output_features']
 
     input_size = len(input_features)
-    output_size = len(output_features)
+    output_size = config['model']['output_size'] if 'output_size' in config['model'] else len(config['model']['output_features'])
 
     feature_cols = config['data']['feature_cols']
 
@@ -128,9 +136,11 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
     scores_list = []
     perfects, doubles, lhcs =  0., 0., 0.
 
+    similarity_matrix_saved = False  # initialize flag to save only once
+
 
     # Initialize a dictionary to store bin scores for all events
-    counter = 0
+    counter_events = 0
     combined_bin_scores = {param: [] for param in bin_ranges.keys()}
     
     if config_model_type == 'flex_attention':
@@ -141,91 +151,118 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
             #pd.DataFrame(truth_rows, columns=['hit_id',  THESE COLUMNS :  'pt', 'eta', 'particle_id', 'weight'])
             out_data_tensor_cpu =  data_tensor[..., [pt_idx, eta_idx, particle_id_idx, weight_idx]]
 
-            #cluster_tensor_cpu = data_tensor[..., cluster_idx].squeeze(-1)
-            #cluster_tensor_cpu = cluster_tensor_cpu.long()
+            pt_tensor_cpu = data_tensor[..., pt_idx].squeeze(-1)
+            pt_tensor = pt_tensor_cpu.to(device)
+
+            true_params = true_params_cpu.to(device)
+
+            cluster_tensor_cpu = data_tensor[..., cluster_idx].squeeze(-1)
+            cluster_tensor_cpu = cluster_tensor_cpu.long()
             length_tensor = length_tensor.long()
             
             in_data_tensor = in_data_tensor_cpu.to(device)
             out_data_tensor = out_data_tensor_cpu.to(device)
-            #cluster_tensor = cluster_tensor_cpu.to(device)
+            cluster_tensor = cluster_tensor_cpu.to(device)
 
             length_tensor = length_tensor.to(device)
 
-            #flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
-            flex_padding_mask = generate_padding_mask(length_tensor)
+            flex_padding_mask = generate_cluster_padding_mask(length_tensor, cluster_tensor)
+            #flex_padding_mask = generate_padding_mask(length_tensor)
                 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 pred = model(in_data_tensor, f'test_{i}', flex_padding_mask, timer)
 
-            if timer:
+            if timer and i > 0:
                 timer.start('unmasking')
-            pred_list = [pred[i, :length_tensor[i], :] for i in range(len(length_tensor))]
-            true_params_list = [true_params_cpu[i, :length_tensor[i], :] for i in range(len(length_tensor))]
-            out_data_list = [out_data_tensor[i, :length_tensor[i], :] for i in range(len(length_tensor))]
-            if timer:
-                timer.stop()
 
+            input_list = [in_data_tensor[i, :length_tensor[i], :] for i in range(len(length_tensor))]
+            pred_list = [pred[i, :length_tensor[i], :] for i in range(len(length_tensor))]
+            pt_list = [pt_tensor[i, :length_tensor[i]] for i in range(len(length_tensor))]
+            true_params_list = [true_params[i, :length_tensor[i], :] for i in range(len(length_tensor))]
+            out_data_list = [out_data_tensor[i, :length_tensor[i], :] for i in range(len(length_tensor))]
+            if timer and i > 0:
+                timer.stop()
+            
+            if i > 0:
+                counter_events += len(length_tensor)
+
+            length_tensor_cpu = length_tensor.to('cpu')
+            existing_cluster_ids = [cluster_tensor_cpu[i, :length_tensor_cpu[i]] for i in range(len(length_tensor_cpu))]
+            
+            param_names = [feature_cols[i] for i in output_feature_indices]
+
+            pred = torch.cat(pred_list, dim=0)
+            truth = torch.cat(true_params_list, dim=0)
+            pt = torch.cat(pt_list, dim=0)
+            pt = pt.to(dtype=pred.dtype)
+
+            loss_per_feature = None
+            #tot_loss, loss_per_feature = mse_per_feature_loss_weighted(pred, truth, feature_names=param_names, pt=pt )
+
+            #tot_loss = supcon_loss_flat()
+
+            #wandb_logger.log({f'test/test loss': tot_loss}, step=i)
+
+            if loss_per_feature is not None:
+                wandb_logger.log({f'test/{k}': v.item() for k, v in loss_per_feature.items()}, step=i)
+
+
+            """
             output_dir = wandb_logger.get_output_dir() if wandb_logger else None
             predictions_csv_path = f"{output_dir}/model_predictions.csv" if output_dir else None
-            param_names = feature_cols[output_feature_indices]
-            
-            append_predictions_to_csv(
-                preds_list=pred_list,
-                targets_list=true_params_list,
-                out_data_list=out_data_list,
-                csv_path=predictions_csv_path,
-                param_names=param_names
-            )
-            
-            if timer:
-                timer.start('clustering')
-
+            if i == 5:
+                append_predictions_to_csv(
+                    preds_list=pred_list,
+                    targets_list=true_params_list,
+                    out_data_list=out_data_list,
+                    cluster_list = existing_cluster_ids,
+                    input_list = input_list,
+                    csv_path=predictions_csv_path,
+                    param_names=param_names
+                )
             """
+            
+            if timer and i > 0:
+                timer.start('reconstruction')
 
-            cluster_labels_list = []
-            for evt_pred in pred_list:
-                # evt_pred.shape => (N, 6)
-                # The 6th dimension (evt_pred[:, 5]) is predicted pT.
+            #cluster_labels_list = clustering(pred_list, epsilon, min_samples)
 
-                # 1) Identify hits with pT>0.9
-                mask = (evt_pred[:, 5] > 0.9)
-                if not mask.any():
-                    # If no hits exceed 0.9 => entire event = -1
-                    cluster_labels = -1 * torch.ones(
-                        evt_pred.size(0),
-                        dtype=torch.long,
-                        device=evt_pred.device
-                    )
-                else:
-                    # 2) Take only subset of features (e.g. first 5 if your clustering uses them)
-                    subset_pred = evt_pred[mask, :5]
+            #cluster_labels_list = clustering_inception(pred_list, existing_cluster_ids, epsilon, min_samples)
+            #cluster_labels_list = clustering_HDBSCAN(pred_list, epsilon, min_samples)
+            cluster_labels_list, similarity_matrix = clustering_similarity(pred_list, cluster_ids_in= existing_cluster_ids)
 
-                    # 3) Run your existing clustering function on this subset
-                    #    If your clustering(...) expects a list of events, pass [subset_pred]
-                    #    which returns a list of cluster labels (just 1 entry).
-                    sub_labels_list = clustering([subset_pred], min_cl_size, min_samples)
-                    sub_labels = sub_labels_list[0]  # shape (#hits_above_threshold,)
-
-                    # 4) Map subset labels back to full event => -1 for excluded hits
-                    cluster_labels = -1 * torch.ones(
-                        evt_pred.size(0),
-                        dtype=torch.long,
-                        device=evt_pred.device
-                    )
-                    sub_labels = sub_labels.to(evt_pred.device) 
-                    sub_labels = sub_labels.to(torch.long)
-                    cluster_labels[mask] = sub_labels
-
-                cluster_labels_list.append(cluster_labels)
-            """
-
-            cluster_labels_list = clustering(pred_list, min_cl_size, min_samples)
-            if timer:
+            if timer and i > 0:
                 timer.stop()
 
+            
+            
+            # save similarity matrix and particle IDs once
+            if (not similarity_matrix_saved) and (similarity_matrix != None):
+                saved_similarity_matrix = similarity_matrix.cpu().numpy()
+                saved_particle_ids = out_data_tensor_cpu[0, :length_tensor[0], particle_id_idx].numpy()
+
+                # specify a directory where to save the files
+                save_dir = wandb_logger.get_output_dir() if wandb_logger else None
+
+                # save using np.savez
+                np.savez(os.path.join(save_dir, "similarity_matrix_event_{}.npz".format(i)),
+                        similarity_matrix=saved_similarity_matrix,
+                        particle_ids=saved_particle_ids)
+
+                similarity_matrix_saved = True  # set to true after saving
+
             for cluster_labels, track_labels in zip(cluster_labels_list, out_data_list):
+                #true_particle_ids = track_labels[:, 2].long().cpu().numpy()
+                # Check perfect clustering scenario 
+                #true_cluster_labels_tensor = torch.from_numpy(true_particle_ids)
+
                 event_score, scores, nr_particles, predicted_tracks, true_tracks = calc_score_trackml(cluster_labels, track_labels, pt_threshold=0.9)
-                scores_list.append(event_score)
+                scores_list.append(scores[1])
+                
+                bin_scores = calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges)
+                for param, bin_score in bin_scores.items():
+                    combined_bin_scores[param].append(bin_score)
+
                 if wandb_logger != None:
                     metrics = {'batch/event score' : event_score, 
                             'batch/num_hits_per_event' : len(cluster_labels),
@@ -235,8 +272,10 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
                     wandb_logger.log(metrics)
 
 
-            if i % 100 == 0:
-                logging.info(f"Processed {i} batches. Last score: {scores_list[-1]} Mean score so far {sum(scores_list) / len(scores_list)}")
+            if i % 10 == 0:
+                logging.info(f"Processed {i} batches. Last DM score: {scores_list[-1]} Mean score so far {sum(scores_list) / len(scores_list)}")
+        
+        
 
 
     else:
@@ -271,13 +310,13 @@ def test_main(model, test_loader, min_cl_size, min_samples, bin_ranges, device, 
             track_labels = torch.unsqueeze(track_labels[~padding_mask], 0)
         
 
-        #bin_scores = calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges)
-        #for param, scores in bin_scores.items():
-        #    combined_bin_scores[param].append(scores)
-            
-
-    #wandb_logger.plot_binned_scores(combined_bin_scores, total_average_score)
+    wandb_logger.save_binned_scores(combined_bin_scores)
     total_average_score = sum(scores_list) / len(scores_list)
+
+    timer_stats = timer.get_stats(reset=True)
+    avg_timings = {step_name: total_time / counter_events
+    for step_name, total_time in timer_stats.items()}
+    wandb_logger.log({**avg_timings})
 
     return total_average_score
 
@@ -339,7 +378,7 @@ def main(config_path):
     data_folder = config['data']['data_dir']
     logging.info(f'Loading data from {data_folder} ...')
     batch_size = config['training']['batch_size']
-    test_loader = get_test_dataloader(data_folder, batch_size=batch_size) 
+    test_loader = get_test_dataloader(config, batch_size=batch_size) 
 
     logging.info("Data loaded")
 
@@ -351,16 +390,16 @@ def main(config_path):
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logging.info(f"Total Trainable Parameters: {total_params}")
 
-    cl_size = wandb.config.min_cl_size if 'min_cl_size' in wandb.config else 5
+    epsilon = wandb.config.epsilon if 'epsilon' in wandb.config else 0.01
     min_sam = wandb.config.min_samples if 'min_samples' in wandb.config else 3
     bin_ranges = config['bin_ranges']
 
-    avg_score = test_main(model, test_loader, cl_size, min_sam, bin_ranges, device, config, wandb_logger, timer)
-    print(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {avg_score}', flush=True)
-    logging.info(f'cluster size {cl_size}, min samples {min_sam}, TrackML score {avg_score}')
+    avg_score = test_main(model, test_loader, epsilon, min_sam, bin_ranges, device, config, wandb_logger, timer)
+    print(f'epsilon {epsilon}, min samples {min_sam}, Track DM eff. {avg_score}', flush=True)
+    logging.info(f'epsilon {epsilon}, min samples {min_sam}, Track DM eff. {avg_score}')
     #print(perfect, double_maj, lhc, flush=True)
-    timer_stats = timer.get_stats(reset=True)
-    wandb_logger.log({'total/cluster size' : cl_size, 'total/min sample size' : min_sam,'total/trackML score': avg_score, **timer_stats})
+    
+    wandb_logger.log({'total/epsilon' : epsilon, 'total/min sample size' : min_sam,'total/Track DM efficiency': avg_score})
 
     wandb_logger.alert("Finished test", "Finished test")
     

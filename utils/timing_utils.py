@@ -41,9 +41,9 @@ class StepTimer:
         else:
             self.start_time = time.time()
 
-    def stop(self):
+    def stop(self, num_events=1):
         """
-        End timing for the current step, accumulate in self.stats[step_name].
+        End timing for the current step, accumulate time, and increment event count.
         """
         if self.current_step_name is None:
             return  # No step was started
@@ -52,11 +52,10 @@ class StepTimer:
         if 'cuda' in str(self.device):
             self.end_event.record()
             torch.cuda.synchronize()
-            ms = self.start_event.elapsed_time(self.end_event)
-            elapsed = ms / 1000.0  # convert ms to seconds
+            elapsed_ms = self.start_event.elapsed_time(self.end_event)
+            elapsed = elapsed_ms / 1000.0  # convert ms to seconds
         else:
-            end_time = time.time()
-            elapsed = end_time - self.start_time
+            elapsed = time.time() - self.start_time
 
         # accumulate into stats
         if self.current_step_name not in self.stats:
@@ -65,12 +64,14 @@ class StepTimer:
 
         # reset current step name
         self.current_step_name = None
+        
 
     def reset_stats(self):
         """
         Clear the stats dictionary
         """
         self.stats.clear()
+        self.total_events = 0
 
     def get_stats(self, reset=False):
         """
