@@ -6,7 +6,6 @@ from evaluation.clustering import clustering, clustering_inception
 from evaluation.clustering import clustering, clustering_inception, clustering_HDBSCAN
 from evaluation.combine_hits import clustering_similarity
 
-clustering_similarity = torch.compile(clustering_similarity, fullgraph=True,  mode="max-autotune")
 
 from evaluation.loss import supcon_loss_flat
 

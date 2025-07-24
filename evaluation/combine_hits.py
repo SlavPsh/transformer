@@ -55,7 +55,7 @@ def _cluster_event_knn(
 
     # (1) build k‑NN graph         ---------------------------
     edge_index = torch_cluster.knn_graph(
-        emb, k=k, batch=None, loop=False
+        emb.to(torch.float32), k=k, batch=None, loop=False
     )                               # shape (2, E)
 
     # (2) cosine similarity filter  --------------------------
@@ -89,7 +89,7 @@ def _cluster_event_knn(
         labels[small_comp] = (small_comp.nonzero().squeeze(1)
                               + int(is_big.sum())).to(labels.dtype)
 
-    return labels.to(torch.int32).cpu()
+    return labels.to(torch.int32)
 
 # ------------------------------------------------------------
 #  Main public wrapper  (keeps original signature)
@@ -141,5 +141,7 @@ def clustering_similarity(
             sim_dump = (torch.matmul(emb, emb.T) / temperature).float().cpu()
 
         out.append(labels)
+
+    out = [lbl.cpu() for lbl in out]
 
     return out, sim_dump
