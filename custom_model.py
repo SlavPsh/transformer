@@ -386,14 +386,14 @@ class TransformerRegressor(nn.Module):
         self.num_heads = n_head
         self.mask_cache_cpu = {} 
 
-    def build_or_reuse_gpu_mask(self, key, score_mod, B, S):
+    def build_or_reuse_gpu_mask(self, key, score_mod, B, S, device = 'cuda'):
         # if mask is already on CPU
         if key in self.mask_cache_cpu:
             # load from CPU to GPU
             return self.mask_cache_cpu[key].to(device='cuda')
 
         # otherwise, build on GPU once
-        mask_gpu = fast_create_block_mask(score_mod, B, None, S, S, device='cuda')
+        mask_gpu = fast_create_block_mask(score_mod, B, None, S, S, device=device)
 
         # then store a CPU copy for future re-use
         mask_cpu = mask_gpu.to(device='cpu')
@@ -417,7 +417,7 @@ class TransformerRegressor(nn.Module):
             timer.start('block_mask_creation')
 
         key = (batch_name, B, S)
-        mask_gpu = self.build_or_reuse_gpu_mask(key, flex_padding_mask, B, S)
+        mask_gpu = self.build_or_reuse_gpu_mask(key, flex_padding_mask, B, S, device=input.device)
 
         if timer and batch_name != "test_0":
             timer.stop()

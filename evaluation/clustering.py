@@ -68,7 +68,7 @@ def _cluster_subset(emb_subset: torch.Tensor,
         return cid_local                           # all noise
 
     #emb_subset = torch.nn.functional.normalize(emb_subset, dim=-1)
-    emb_subset = torch.nn.functional.normalize(emb_subset.to(torch.float16), dim=-1)
+    emb_subset = torch.nn.functional.normalize(emb_subset.to(torch.float), dim=-1)
     sim        = emb_subset @ emb_subset.T / temperature
     diag_idx   = torch.arange(num_valid, device=emb_subset.device)
     sim[diag_idx, diag_idx] = -1.
@@ -139,7 +139,7 @@ def _cluster_event_by_similarity(emb: torch.Tensor,
         return cid_full                               # all noise
 
     emb_valid = emb[valid_mask]
-    emb_valid = torch.nn.functional.normalize(emb_valid.to(torch.bfloat16), dim=-1)
+    emb_valid = torch.nn.functional.normalize(emb_valid.to(torch.float), dim=-1)
     #emb_valid = torch.nn.functional.normalize(emb_valid, dim=-1)
 
     # (2) cosine‑similarity matrix once

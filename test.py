@@ -3,7 +3,11 @@ from data_processing.dataset import HitsDataset, get_dataloaders
 from data_processing.dataset import load_trackml_data, PAD_TOKEN
 from evaluation.scoring import calc_score_trackml, calculate_bined_scores, append_predictions_to_csv
 from evaluation.clustering import clustering, clustering_inception
-from evaluation.clustering import clustering, clustering_inception, clustering_HDBSCAN,clustering_similarity
+from evaluation.clustering import clustering, clustering_inception, clustering_HDBSCAN
+from evaluation.combine_hits import clustering_similarity
+
+clustering_similarity = torch.compile(clustering_similarity, fullgraph=True,  mode="max-autotune")
+
 from evaluation.loss import supcon_loss_flat
 
 #from evaluation.plotting import plot_heatmap
@@ -229,7 +233,7 @@ def test_main(model, test_loader, epsilon, min_samples, bin_ranges, device, conf
 
             #cluster_labels_list = clustering_inception(pred_list, existing_cluster_ids, epsilon, min_samples)
             #cluster_labels_list = clustering_HDBSCAN(pred_list, epsilon, min_samples)
-            cluster_labels_list, similarity_matrix = clustering_similarity(pred_list, cluster_ids_in= existing_cluster_ids)
+            cluster_labels_list, similarity_matrix = clustering_similarity(pred_list, num_points=min_samples, temperature=epsilon, cluster_ids_in= existing_cluster_ids)
 
             if timer and i > 0:
                 timer.stop()
@@ -383,6 +387,9 @@ def main(config_path):
     logging.info("Data loaded")
 
     model = load_model(config, device)  
+
+
+    
     #model.attach_wandb_logger(wandb_logger)
     timer = StepTimer(device)
 
