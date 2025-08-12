@@ -3,8 +3,8 @@ from data_processing.dataset import HitsDataset, get_dataloaders
 from data_processing.dataset import load_trackml_data, PAD_TOKEN
 from evaluation.scoring import calc_score_trackml, calculate_bined_scores, append_predictions_to_csv
 from evaluation.clustering import clustering, clustering_inception
-from evaluation.clustering import clustering, clustering_inception, clustering_HDBSCAN
-from evaluation.combine_hits import clustering_similarity
+from evaluation.clustering import clustering, clustering_inception, clustering_HDBSCAN, clustering_similarity
+#from evaluation.combine_hits import clustering_similarity
 
 
 from evaluation.loss import supcon_loss_flat
@@ -228,11 +228,12 @@ def test_main(model, test_loader, epsilon, min_samples, bin_ranges, device, conf
             if timer and i > 0:
                 timer.start('reconstruction')
 
+            similarity_matrix = None
             #cluster_labels_list = clustering(pred_list, epsilon, min_samples)
 
             #cluster_labels_list = clustering_inception(pred_list, existing_cluster_ids, epsilon, min_samples)
             #cluster_labels_list = clustering_HDBSCAN(pred_list, epsilon, min_samples)
-            cluster_labels_list, similarity_matrix = clustering_similarity(pred_list, num_points=min_samples, temperature=epsilon, cluster_ids_in= existing_cluster_ids)
+            cluster_labels_list, similarity_matrix = clustering_similarity(pred_list, num_points=min_samples, temperature=epsilon, save_similarity_for_event = True)
 
             if timer and i > 0:
                 timer.stop()
@@ -241,16 +242,16 @@ def test_main(model, test_loader, epsilon, min_samples, bin_ranges, device, conf
             
             # save similarity matrix and particle IDs once
             if (not similarity_matrix_saved) and (similarity_matrix != None):
-                saved_similarity_matrix = similarity_matrix.cpu().numpy()
-                saved_particle_ids = out_data_tensor_cpu[0, :length_tensor[0], particle_id_idx].numpy()
+                L0 = int(length_tensor[0])  # or length_tensor[0].item()
 
-                # specify a directory where to save the files
-                save_dir = wandb_logger.get_output_dir() if wandb_logger else None
+                sim_cpu  = similarity_matrix.detach().to(torch.bfloat16).cpu()
+                pids_cpu = out_data_tensor_cpu[0, :L0, 2].detach().to(torch.int64).cpu()
 
-                # save using np.savez
-                np.savez(os.path.join(save_dir, "similarity_matrix_event_{}.npz".format(i)),
-                        similarity_matrix=saved_similarity_matrix,
-                        particle_ids=saved_particle_ids)
+                save_dir = wandb_logger.get_output_dir() if wandb_logger else "./outputs"
+                os.makedirs(save_dir, exist_ok=True)
+
+                torch.save(sim_cpu,  os.path.join(save_dir, "similarity_matrix.pt"))
+                torch.save(pids_cpu, os.path.join(save_dir, "particle_ids.pt"))
 
                 similarity_matrix_saved = True  # set to true after saving
 

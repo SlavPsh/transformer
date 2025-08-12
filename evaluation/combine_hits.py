@@ -1,147 +1,187 @@
+import torch
+from typing import List, Sequence, Tuple
+from concurrent.futures import ThreadPoolExecutor
 
-import torch, torch_cluster
-from typing import Sequence, List
-
-# ----------  GPU Union‑Find  -------------------------------
-class _UnionFind(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, edges, n):
-        """
-        edges : (2,E) int64
-        n     : scalar int64 (number of vertices)
-        returns: (n,) int64 parent array with path‑compression applied
-        """
-        # parents initialised to self
-        parent = torch.arange(n, dtype=torch.int64, device=edges.device)
-
-        @torch.jit.script
-        def _find(p: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-            # recursive find with path compression
-            while p[x] != x:
-                p[x] = p[p[x]]
-                x = p[x]
-            return x
-
-        # union every edge
-        for u, v in edges.t():
-            # ϒ compile hoists the loop into a single block
-            root_u = _find(parent, u)
-            root_v = _find(parent, v)
-            if root_u != root_v:
-                # union by smaller index to keep deterministic
-                if root_u < root_v:
-                    parent[root_v] = root_u
-                else:
-                    parent[root_u] = root_v
-        return parent
-
-# ------------------------------------------------------------
 @torch.no_grad()
-def _cluster_event_knn(
-        emb: torch.Tensor, *,
-        k: int,
+def parallel_cluster_event_by_similarity(
+        emb: torch.Tensor,
+        cluster_ids_in: torch.Tensor,
+        num_points: int,
         temperature: float,
         min_cluster_size: int,
-        give_remainder_own_id: bool
+        give_remainder_own_id: bool,
+        num_workers: int = 64
 ) -> torch.Tensor:
-    """
-    New, fully‑GPU, O(Nk) clustering.
-    emb  : (N,D) fp16 / fp32 on CUDA
-    k    : num_points from the original API
-    """
+
+    device = emb.device
     N = emb.size(0)
-    if N < min_cluster_size:
-        return torch.full((N,), -1, dtype=torch.int32, device='cpu')
+    track_ids = torch.full((N,), -1, dtype=torch.int32, device=device)
 
-    # (1) build k‑NN graph         ---------------------------
-    edge_index = torch_cluster.knn_graph(
-        emb.to(torch.float32), k=k, batch=None, loop=False
-    )                               # shape (2, E)
+    cluster_ids = cluster_ids_in.to(device, non_blocking=True)
+    unique_cids = torch.unique(cluster_ids)
+    unique_cids = unique_cids[unique_cids >= 0]
 
-    # (2) cosine similarity filter  --------------------------
-    emb_n = torch.nn.functional.normalize(emb.to(torch.float32), dim=-1)
-    sim = (emb_n[edge_index[0]] * emb_n[edge_index[1]]).sum(dim=1)
-    keep = (sim / temperature) > 1.0          # τ = 1 ≈ original anchor ≥ neighbour rule
-    edge_index = edge_index[:, keep]
+    emb = torch.nn.functional.normalize(emb.float(), dim=-1)
 
-    # (3) GPU Union‑Find           ---------------------------
-    parents = _UnionFind.apply(edge_index, torch.tensor(N, device=emb.device))
+    next_track_id = torch.tensor([0], dtype=torch.int32)
 
-    # canonical component labels
-    comp = torch.where(
-        parents == torch.arange(N, device=emb.device),
-        torch.arange(N, device=emb.device),
-        parents
-    )
+    def process_single_cluster(cid):
+        mask = cluster_ids == cid
+        idxs = mask.nonzero(as_tuple=True)[0]
+        sub_emb = emb[idxs]
 
-    # (4) re‑map to compact 0…C‑1 and size filter
-    #     – we have to count component sizes first
-    uniq, inv = torch.unique(comp, return_inverse=True)
-    sizes = torch.bincount(inv, minlength=uniq.size(0))
-    is_big = sizes >= min_cluster_size
-    big_map = torch.full_like(uniq, -1)
-    big_map[is_big] = torch.arange(int(is_big.sum()), device=emb.device)
+        sub_labels = _cluster_subset(
+            sub_emb,
+            num_points=num_points,
+            temperature=temperature,
+            min_cluster_size=min_cluster_size,
+            give_remainder_own_id=give_remainder_own_id
+        )
 
-    labels = big_map[inv]                             # (N,)
-    if give_remainder_own_id:
-        # each small component gets its own id starting after big ones
-        small_comp = (~is_big)[inv]
-        labels[small_comp] = (small_comp.nonzero().squeeze(1)
-                              + int(is_big.sum())).to(labels.dtype)
+        valid = sub_labels >= 0
+        if valid.any():
+            local_max = sub_labels[valid].max().item() + 1
+            sub_labels[valid] += next_track_id.item()
+            next_track_id.add_(local_max)
 
-    return labels.to(torch.int32)
+        return idxs, sub_labels
 
-# ------------------------------------------------------------
-#  Main public wrapper  (keeps original signature)
-# ------------------------------------------------------------
-def clustering_similarity(
-        pred_embeds: Sequence[torch.Tensor],
-        *,
-        cluster_ids_in: Sequence[torch.Tensor] = None,
-        num_points: int = 5,
-        temperature: float = 0.05,
-        min_cluster_size: int = 3,
-        give_remainder_own_id: bool = True,
-        save_similarity_for_event: bool = False
-) -> List[torch.Tensor]:
-    out, sim_dump = [], None
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [executor.submit(process_single_cluster, cid) for cid in unique_cids]
+
+        for future in futures:
+            idxs, sub_labels = future.result()
+            track_ids[idxs] = sub_labels
+
+    return track_ids.cpu()
+
+
+def _cluster_subset(emb_subset: torch.Tensor,
+                    *,
+                    num_points: int,
+                    temperature: float,
+                    min_cluster_size: int,
+                    give_remainder_own_id: bool) -> torch.Tensor:
+
+    num_valid = emb_subset.size(0)
+    cid_local = torch.full((num_valid,), -1, dtype=torch.int32, device=emb_subset.device)
+    if num_valid < min_cluster_size:
+        return cid_local                           # all noise
+
+    #emb_subset = torch.nn.functional.normalize(emb_subset, dim=-1)
+    emb_subset = torch.nn.functional.normalize(emb_subset.to(torch.float), dim=-1)
+    sim        = emb_subset @ emb_subset.T / temperature
+    diag_idx   = torch.arange(num_valid, device=emb_subset.device)
+    sim[diag_idx, diag_idx] = -1.
+
+    sim_max, sim_arg  = sim.max(dim=1)
+    assigned = torch.zeros(num_valid, dtype=torch.bool, device=emb_subset.device)
+
+    current = 0
+    while True:
+        remaining = ~assigned
+        if not remaining.any():
+            break
+        anchor = torch.nonzero(remaining)[sim_max[remaining].argmax()].item()
+        rem    = int(remaining.sum())
+        if rem < min_cluster_size:
+            if give_remainder_own_id:
+                cid_local[remaining] = current
+            break
+
+        sims_anchor = sim[anchor]
+        sims_anchor[assigned] = -1.
+        k = min(num_points, rem)
+        _, top_idx = sims_anchor.topk(k=k-1)
+        members = torch.cat([torch.tensor([anchor], device=emb_subset.device), top_idx])
+
+        cid_local[members] = current
+        assigned[members] = True
+        current          += 1
+
+
+        bad_rows = (~assigned) & assigned[sim_arg]
+        if bad_rows.any():
+            rows     = torch.nonzero(bad_rows).squeeze(1)
+            new_sim  = sim[rows][:, ~assigned]
+            new_max, new_arg   = new_sim.max(dim=1)
+            sim_max[rows]      = new_max
+            abs_idx            = torch.nonzero(~assigned).squeeze(1)[new_arg]
+            sim_arg[rows]      = abs_idx
+
+    return cid_local
+
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+@torch.no_grad()
+def clustering_similarity(pred_embeds: Sequence[torch.Tensor],
+                          *,
+                          cluster_ids_in: Sequence[torch.Tensor] = None,
+                          num_points: int = 4,
+                          temperature: float = 0.05,
+                          min_cluster_size: int = 3,
+                          give_remainder_own_id: bool = True,
+                          save_similarity_for_event: bool = False,
+                          num_workers: int = 8
+                          ) -> Tuple[List[torch.Tensor], torch.Tensor]:
+
+    clusters = []
+    similarity_matrix = None
+    track_id_lock = threading.Lock()  # Protects next_track_id increment
+
     for i, emb in enumerate(pred_embeds):
         if emb.numel() == 0:
-            out.append(torch.empty((0,), dtype=torch.int32))
+            clusters.append(torch.empty((0,), dtype=torch.int32))
             continue
 
-        # -------- partition by pre‑clusters, but stay on GPU
-        if cluster_ids_in is not None:
-            cid_all  = cluster_ids_in[i].to(emb.device, non_blocking=True)
-            uniq_cid = cid_all.unique()
-            labels   = torch.full_like(cid_all, -1, dtype=torch.int32)
-
-            base = 0
-            for cid in uniq_cid[uniq_cid >= 0]:
-                sel  = (cid_all == cid)
-                sub  = _cluster_event_knn(
-                         emb[sel], k=num_points,
-                         temperature=temperature,
-                         min_cluster_size=min_cluster_size,
-                         give_remainder_own_id=give_remainder_own_id
-                       )
-                good = sub >= 0
-                sub[good] += base
-                base += sub.max().item() + 1 if good.any() else 0
-                labels[sel] = sub
-        else:
-            labels = _cluster_event_knn(
-                        emb, k=num_points,
-                        temperature=temperature,
-                        min_cluster_size=min_cluster_size,
-                        give_remainder_own_id=give_remainder_own_id)
-
-        # optional similarity dump (first event only)
         if save_similarity_for_event and i == 0:
-            sim_dump = (torch.matmul(emb, emb.T) / temperature).float().cpu()
+            normalized_emb = torch.nn.functional.normalize(emb.float(), dim=-1)
+            similarity_matrix = (normalized_emb @ normalized_emb.T).div(temperature).cpu()
 
-        out.append(labels)
+        if cluster_ids_in is not None:
+            cluster_ids = cluster_ids_in[i].to(emb.device, non_blocking=True)
+        else:
+            cluster_ids = torch.zeros(emb.size(0), dtype=torch.int64, device=emb.device)
 
-    out = [lbl.cpu() for lbl in out]
+        device = emb.device
+        N = emb.size(0)
+        track_ids = torch.full((N,), -1, dtype=torch.int32, device=device)
+        emb = torch.nn.functional.normalize(emb.float(), dim=-1)
 
-    return out, sim_dump
+        unique_cids = torch.unique(cluster_ids[cluster_ids >= 0])
+        next_track_id = [0]
+
+        def process_single_cluster(cid):
+            mask = cluster_ids == cid
+            idxs = mask.nonzero(as_tuple=True)[0]
+            sub_emb = emb[idxs]
+
+            sub_labels = _cluster_subset(
+                sub_emb,
+                num_points=num_points,
+                temperature=temperature,
+                min_cluster_size=min_cluster_size,
+                give_remainder_own_id=give_remainder_own_id
+            )
+
+            valid = sub_labels >= 0
+            if valid.any():
+                local_max = int(sub_labels[valid].max().item()) + 1
+                with track_id_lock:  # Ensuring thread-safety here
+                    offset = next_track_id[0]
+                    next_track_id[0] += local_max
+                sub_labels[valid] += offset
+
+            return idxs, sub_labels
+
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = [executor.submit(process_single_cluster, cid) for cid in unique_cids]
+
+            for future in futures:
+                idxs, sub_labels = future.result()
+                track_ids[idxs] = sub_labels
+
+        clusters.append(track_ids.cpu())
+
+    return clusters, similarity_matrix

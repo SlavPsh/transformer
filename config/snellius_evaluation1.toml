@@ -1,38 +1,62 @@
 # example toml
 [experiment]
-name = "Transformer with attention distance"
-description = "Trying base 10-50 model on vertices data 2-10"
+name = "Transformer with flex attention"
+description = "Evaluation"
 
 [data]
-data_dir = "/projects/0/nisei0750/slava/data/ml_input_data"
-# trackml_tiny_10to50tracks_100events.csv
-# trackml_short_10to50_tracks_5k_events.csv
-# trackml_10to50tracks_40kevents.csv
-# trackml_200to500tracks_40kevents.csv
-# trackml_2to10vertices.csv
-data_file = "trackml_2to10vertices_new2.csv"
-dataloader_num_workers = 4
-num_classes = 451
+#feature_cols = ["x", "y", "z", "cos_theta", "sin_phi", "cos_phi", "q", "log_p", "vz", "log_pt", "1/pt", "pt", "eta", "particle_id", "weight", "event_id", "surface_id", "cluster_id"]
+feature_cols =   ["x", "y", "z", 'xi','yi','zi','dirx','diry','dirz', "vz", "pt", "eta", "particle_id",
+        "weight", "event_id", "surface_id", "cluster_id"]
+data_dir = "/projects/0/nisei0750/slava/data/ml_input_data/batched_clustered_data_DBSCAN_0107/tensors_barrel"
+normalize = true
+dataloader_num_workers = 0
+
+
+[data.normalization_features]
+
+[data.normalization_features.x]
+mean = 0
+std = 91
+
+[data.normalization_features.y]
+mean = 0
+std = 91
+
+[data.normalization_features.z]
+mean = 0
+std = 200
+
+[data.normalization_features.xi]
+mean = 0
+std = 91
+
+[data.normalization_features.yi]
+mean = 0
+std = 91
+
+[data.normalization_features.zi]
+mean = 0
+std = 200
+
 
 
 [model]
-checkpoint_path = "/projects/0/nisei0750/slava/data/trained_models/models427epochs/model_trackml_10to50_best"
-# checkpoint_path = "/data/atlas/users/spshenov/trained_models/models427epochs/model_trackml_10to50_best"
-# checkpoint_path = "/data/atlas/users/spshenov/trained_models/20241104_120903_orthodox-elegant-bloodhound_train/model_best.pth"
-# trained model base "/data/atlas/users/spshenov/trained_models/20241107_070732_aloof-capable-terrier_train/model_best.pth"
-# trained model w/ att mask "/data/atlas/users/spshenov/trained_models/20241106_175638_provocative-adventurous-guppy_train/model_best.pth"
-num_encoder_layers = 6
-d_model = 32
+checkpoint_path = "/projects/0/nisei0750/slava/data/trained_models/20250722_182348_mottled-dainty-echidna_train/model_best.pth"
+
+# type = "vanilla"
+type = "flex_attention"
+num_encoder_layers = 12
+d_model = 192
+dim_feedforward = 384
 n_head = 4
-input_size = 3
-output_size = 4
-dim_feedforward = 128
+input_features = ['x', 'y', 'z']
+output_features = ['xi','yi', 'zi', 'dirx', 'diry', 'dirz']
+output_size = 32
 dropout = 0.1
-use_flash_attention = false
-use_att_mask = false
+mask_on_clusters = false
 
 [training]
-batch_size = 64
+batch_size = 1
 
 [output]
 base_path = "/projects/0/nisei0750/slava/data/evaluation"
@@ -44,38 +68,29 @@ level = "INFO"
 
 [sweep]
 entity = "spshenov-university-of-amsterdam"
-project = "transformer_for_particle_tracking"
+project = "transformer_with_flex_attention"
 method = "grid"  # or 'random', 'bayes'
 
 [sweep.metric]
 name = "test/event score"
 goal = "maximize"
 
-[sweep.parameters.use_att_mask]
-values = [false]
+[sweep.parameters.epsilon]
+#values = [1.0, 0.0001, 10.0, 0.001]
+values = [0.05]
 
-[sweep.parameters.min_cl_size]
-values = [5]
+#[sweep.parameters.min_cl_size]
+#values = [1]
 
 [sweep.parameters.min_samples]
-values = [3, 4]
-
-[bin_ranges.q]
-min = -2
-max = 2
-step = 2
+values = [5]
 
 [bin_ranges.pt]
-min = 0
+min = 1
 max = 5
 step = 0.5
 
 [bin_ranges.eta]
 min = 0
-max = 4
-step = 0.5
-
-[bin_ranges.sin_phi]
-min = -1
-max = 1
+max = 2.2
 step = 0.2

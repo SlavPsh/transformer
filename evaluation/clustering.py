@@ -188,13 +188,13 @@ def _cluster_event_by_similarity(emb: torch.Tensor,
 
     # (4) merge back into full‑event tensor and move to CPU
     cid_full[valid_mask] = cid_local
-    return cid_full.cpu()               
+    return cid_full.cpu() , sim        
 
 
 def clustering_similarity(pred_embeds  : Sequence[torch.Tensor],
                           *,
                           cluster_ids_in: Sequence[torch.Tensor] = None,
-                          num_points         : int      = 4,
+                          num_points         : int      = 5,
                           temperature        : float    = 0.05,
                           min_cluster_size   : int      = 3,
                           give_remainder_own_id: bool   = True,
@@ -219,9 +219,8 @@ def clustering_similarity(pred_embeds  : Sequence[torch.Tensor],
         
         sim_matrix = None
 
-        if save_similarity_for_event and i == 0:
-            sim_matrix = torch.matmul(emb, emb.T) / temperature
-            similarity_matrix = sim_matrix.detach().cpu()
+
+
 
         
         if cluster_ids_in is not None:
@@ -235,13 +234,16 @@ def clustering_similarity(pred_embeds  : Sequence[torch.Tensor],
                 give_remainder_own_id=give_remainder_own_id
             )
         else:
-            cid = _cluster_event_by_similarity(
+            cid, sim_matrix = _cluster_event_by_similarity(
                     emb, num_points=num_points,
                     temperature=temperature,
                     min_cluster_size=min_cluster_size,
                     give_remainder_own_id=give_remainder_own_id
                 )
         clusters.append(cid)
+
+    if save_similarity_for_event and i == 0:
+        similarity_matrix = sim_matrix
 
     return clusters, similarity_matrix
 
@@ -319,7 +321,7 @@ def clustering_inception(pred_params, existing_cluster_ids, epsilon, min_samples
     - cluster_labels: List of tensors with new cluster labels per event.
     '''
     #clustering_algorithm = HDBSCAN(min_cluster_size=min_cl_size, min_samples=min_samples)
-    clustering_algorithm = DBSCAN(eps=epsilon, min_samples=min_samples)
+    clustering_algorithm = DBSCAN(eps=epsilon, min_samples=min_samples, metric='cosine')
     cluster_labels = []
 
     for event_preds, event_existing_clusters in zip(pred_params, existing_cluster_ids):

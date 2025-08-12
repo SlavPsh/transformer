@@ -204,12 +204,93 @@ def calc_score(pred_lbl, true_lbl):
     tracks = _analyze_tracks(truth, submission) 
     return score_event(tracks), efficiency_scores(tracks, nr_particles)
 
-def calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges, pt_threshold = 0.9):
+def calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges, pt_threshold=0.9):
+    bin_params = list(bin_ranges.keys())
+
+    predicted_tracks = predicted_tracks[predicted_tracks["pt"] > pt_threshold].copy()
+    true_tracks = true_tracks[true_tracks["pt"] > pt_threshold].copy()
+    true_tracks.rename(columns={'hit_id': 'nhits_truth'}, inplace=True)
+
+    bins = {
+        param: np.arange(bin_ranges[param]['min'], 
+                         bin_ranges[param]['max'] + bin_ranges[param]['step'], 
+                         bin_ranges[param]['step'])
+        for param in bin_params
+    }
+
+    all_bin_scores = {}
+
+    # Define reconstructable truth particles explicitly (≥3 hits & pt>threshold)
+    reconstructable_pids = set(
+        true_tracks[
+            (true_tracks['nhits_truth'] >= 3) & 
+            (true_tracks['pt'] > pt_threshold)
+        ]['particle_id']
+    )
+
+    for param in bin_params:
+        predicted_tracks[f'{param}_bin'] = pd.cut(predicted_tracks[param], bins=bins[param], right=False)
+        true_tracks[f'{param}_bin'] = pd.cut(true_tracks[param], bins=bins[param], right=False)
+
+        good_tracks = get_good_tracks(predicted_tracks)
+
+        # Explicit marking of tracks matched to reconstructable particles
+        predicted_tracks['is_reconstructable'] = predicted_tracks['major_particle_id'].isin(reconstructable_pids)
+        predicted_tracks['is_good'] = predicted_tracks.index.isin(good_tracks.index)
+
+        # Define explicitly reconstructed tracks ≥3 hits matched to reconstructable particles
+        reco_predicted_tracks = predicted_tracks[
+            (predicted_tracks['nhits'] >= 3) &
+            (predicted_tracks['is_reconstructable'])
+        ].copy()
+
+        # Numerator: reconstructed tracks failing double majority criterion
+        num_fake_DM = (~reco_predicted_tracks['is_good']).groupby(reco_predicted_tracks[f'{param}_bin'], observed = True).sum()
+
+        # Denominator: all reconstructed tracks ≥3 hits matched to reconstructable particles
+        denom_fake_DM = reco_predicted_tracks.groupby(f'{param}_bin', observed = True).size()
+
+        # Calculate explicitly your DM fake rate
+        fake_rate_DM = num_fake_DM / denom_fake_DM.replace(0, np.nan)
+
+        # Efficiency calculation remains unchanged (as defined previously)
+        # Numerator: reconstructable particles matched by ≥1 good track
+        good_tracks_reco = good_tracks[good_tracks['major_particle_id'].isin(reconstructable_pids)]
+        matched_pids = good_tracks_reco['major_particle_id'].unique()
+
+        # Count reconstructable truth particles matched by good track per bin
+        true_reco_grouped = true_tracks[(true_tracks['nhits_truth'] >= 3)].groupby(f'{param}_bin', observed = True)
+        total_reco_true_particles_bin = true_reco_grouped['particle_id'].nunique()
+
+        matched_reco_true_particles_bin = true_tracks[
+            true_tracks['particle_id'].isin(matched_pids)
+        ].groupby(f'{param}_bin', observed = True)['particle_id'].nunique()
+
+        efficiency = matched_reco_true_particles_bin / total_reco_true_particles_bin.replace(0, np.nan)
+
+        bin_scores = pd.DataFrame({
+            'total_predicted_tracks': predicted_tracks.groupby(f'{param}_bin', observed = True).size(),
+            'reco_predicted_tracks': denom_fake_DM,
+            'num_fake_DM_tracks': num_fake_DM,
+            'total_reco_true_particles': total_reco_true_particles_bin,
+            'matched_reco_true_particles': matched_reco_true_particles_bin,
+            'event_efficiency': efficiency,
+            'event_fake_rate': fake_rate_DM
+        }).reset_index()
+
+        all_bin_scores[param] = bin_scores
+
+    return all_bin_scores
+
+
+def calculate_bined_scores_old(predicted_tracks, true_tracks, bin_ranges, pt_threshold = 0.9):
     # Extract bin_params from the keys of bin_ranges
     bin_params = list(bin_ranges.keys())
 
     predicted_tracks = predicted_tracks[predicted_tracks["pt"]>pt_threshold].copy()
     true_tracks = true_tracks[true_tracks["pt"]>pt_threshold].copy()
+
+    true_tracks.rename(columns={'hit_id': 'nhits_truth'}, inplace=True)
 
     # Generate bin edges using numpy.arange
     # Create bins with -inf and inf for outer bins
@@ -222,12 +303,44 @@ def calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges, pt_thresho
     # Initialize a dictionary to store bin scores for each parameter
     all_bin_scores = {}
 
+    
+    # Reconstructable truth particles (≥3 hits)
+    reconstructable_particles = set(true_tracks[true_tracks['nhits_truth'] >= 3]['particle_id'].unique())
+
     for param in bin_params:
         # Create bins for the parameter
         predicted_tracks[f'{param}_bin'] = pd.cut(predicted_tracks[param], bins=bins[param], right=False)
         true_tracks[f'{param}_bin'] = pd.cut(true_tracks[param], bins=bins[param], right=False)
 
         good_tracks = get_good_tracks(predicted_tracks)
+
+        # Efficiency Calculation:
+        # Count how many reconstructable truth particles have at least one good reconstructed track
+        good_tracks_reco = good_tracks[good_tracks['major_particle_id'].isin(reconstructable_particles)]
+        particles_matched_to_good = good_tracks_reco.groupby('major_particle_id').size().index.unique()
+
+        # Count total reconstructable truth particles per bin
+        true_reco_grouped = true_tracks[true_tracks['nhits_truth'] >= 3].groupby(f'{param}_bin', observed=False)
+        total_reco_true_particles_bin = true_reco_grouped['particle_id'].nunique()
+
+        # Count reconstructable truth particles matched by at least one good track per bin
+        good_tracks_reco_grouped = true_tracks[
+            true_tracks['particle_id'].isin(particles_matched_to_good)
+        ].groupby(f'{param}_bin', observed=False)
+        matched_reco_true_particles_bin = good_tracks_reco_grouped['particle_id'].nunique()
+
+        event_efficiency = matched_reco_true_particles_bin / total_reco_true_particles_bin.replace(0, np.nan)
+
+        # Fake Rate Calculation:
+        # Reconstructed tracks NOT matched to any reconstructable particle
+        predicted_tracks['matched_to_reco'] = predicted_tracks['major_particle_id'].isin(reconstructable_particles)
+        predicted_grouped = predicted_tracks.groupby(f'{param}_bin', observed=False)
+        
+        total_predicted_tracks = predicted_grouped.size()
+        unmatched_predicted_tracks = predicted_grouped.apply(lambda df: (~df['matched_to_reco']).sum())
+
+        event_fake_rate = unmatched_predicted_tracks / total_predicted_tracks.replace(0, np.nan)
+
 
         # Group by the bins
         predicted_grouped = predicted_tracks.groupby(f'{param}_bin', observed=False)
@@ -249,9 +362,6 @@ def calculate_bined_scores(predicted_tracks, true_tracks, bin_ranges, pt_thresho
 
         # Calculate the count of 'good' tracks in each bin
         good_predicted_count = good_grouped.size()
-
-        event_efficiency = good_predicted_count / total_true_count
-        event_fake_rate = (total_predicted_count - good_predicted_count) / total_predicted_count
 
         # Combine the results into a single DataFrame
         bin_scores = pd.DataFrame({

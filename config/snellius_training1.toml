@@ -1,57 +1,105 @@
 # Configuration toml
 [experiment]
-name = "Transformer with attention distance"
-description = "Training model on vertex data"
+name = "Transformer with different models"
+description = "Training"
 
 [data]
-data_dir = "/projects/0/nisei0750/slava/data/ml_input_data"
-# trackml_tiny_10to50tracks_100events.csv
-# trackml_short_10to50_tracks_5k_events.csv
-# trackml_10to50tracks_40kevents.csv
-# trackml_200to500tracks_40kevents.csv
-data_file = "trackml_2to10vertices.csv"
-dataloader_num_workers = 4
+#feature_cols = ["x", "y", "z", "cos_theta", "sin_phi", "cos_phi", "q", "log_p", "vz", "log_pt", "1/pt", "pt", "eta", "particle_id", "weight", "event_id", "surface_id", "cluster_id"]
+feature_cols =   ["x", "y", "z", 'xi','yi','zi','dirx','diry','dirz', "vz", "pt", "eta", "particle_id",
+        "weight", "event_id", "surface_id", "cluster_id"]
+
+data_dir = "/projects/0/nisei0750/slava/data/ml_input_data/batched_clustered_data_DBSCAN_0107/tensors_barrel"
+normalize = true
+dataloader_num_workers = 0
+
+[data.normalization_features]
+
+[data.normalization_features.x]
+mean = 0
+std = 91
+
+[data.normalization_features.y]
+mean = 0
+std = 91
+
+[data.normalization_features.z]
+mean = 0
+std = 200
+
+[data.normalization_features.xi]
+mean = 0
+std = 91
+
+[data.normalization_features.yi]
+mean = 0
+std = 91
+
+[data.normalization_features.zi]
+mean = 0
+std = 200
+
 
 [model]
-num_encoder_layers = 6
+# type = "vanilla"
+type = "flex_attention"
+num_encoder_layers = 7
 d_model = 128
 n_head = 4
-input_size = 3
-output_size = 4
-dim_feedforward = 256
+input_features = ['x', 'y', 'z']
+output_features = ['xi','yi','zi']
+output_size = 8
 dropout = 0.1
-use_flash_attention = false
-use_att_mask = false
 
 [training]
-batch_size = 1
-total_epochs = 500
+batch_size = 8
+total_epochs = 350
+accumulation_steps = 1
 shuffle = false # whether training data should be shuffled
 start_from_scratch = true
-default_lr = 1e-3
+loss_weighting = 'exp' # 'none' | 'zero' | 'linear' | 'exp'
+
+[training.scheduler]
+initial_lr = 2e-3
+max_lr = 1e-2
+min_lr = 1e-6
+mode = "min"
+factor = 0.6
+patience = 5
+warmup_factor = 0.2
+verbose = true
 
 [training.early_stopping]
-patience = 100
+patience = 20
 
 [output]
 base_path = "/projects/0/nisei0750/slava/data/trained_models"
 
 [logging]
 level = "INFO"
-epoch_log_interval = 10
-model_save_interval = 30
+epoch_log_interval = 1
+model_save_interval = 1
 
 [wandb]
-watch_interval = 1
+watch_interval = 100
 
 [sweep]
 entity = "spshenov-university-of-amsterdam"
-project = "transformer_for_particle_tracking"
+project = "transformer_with_flex_attention"
 method = "grid"
 
 [sweep.metric]
-name = "train/validation loss"
+name = "train/min_val_loss"
 goal = "minimize"
 
-[sweep.parameters.use_att_mask]
-values = [false]
+[sweep.parameters.num_encoder_layers]
+values = [4]
+
+[sweep.parameters.d_model]
+values = [64, 128, 256]
+
+[sweep.parameters.temperature]
+values = [0.05, 0.01, 0.07, 0.1, 0.2, 0.5]
+
+[sweep.parameters.output_size]
+values = [8, 16, 32]
+
