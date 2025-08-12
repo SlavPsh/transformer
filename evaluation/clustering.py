@@ -211,17 +211,13 @@ def clustering_similarity(pred_embeds  : Sequence[torch.Tensor],
     """
 
     clusters = []
-    similarity_matrix = None  # default is None unless explicitly saved
+    similarity_matrix = None 
     for i, emb in enumerate(pred_embeds):
         if emb.numel() == 0:
             clusters.append(torch.empty((0,), dtype=torch.int32))
             continue
         
         sim_matrix = None
-
-
-
-
         
         if cluster_ids_in is not None:
             cluster_ids = cluster_ids_in[i].to(emb.device, non_blocking=True)

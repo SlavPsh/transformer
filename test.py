@@ -2,7 +2,7 @@ import torch
 from data_processing.dataset import HitsDataset, get_dataloaders
 from data_processing.dataset import load_trackml_data, PAD_TOKEN
 from evaluation.scoring import calc_score_trackml, calculate_bined_scores, append_predictions_to_csv
-from evaluation.clustering import clustering, clustering_inception
+
 from evaluation.clustering import clustering, clustering_inception, clustering_HDBSCAN, clustering_similarity
 #from evaluation.combine_hits import clustering_similarity
 
